@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import isaaclab.sim as sim_utils
 import numpy as np
 import torch
-
-import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.envs.common import VecEnvStepReturn
@@ -15,6 +14,7 @@ from isaaclab.sensors.camera import TiledCamera, TiledCameraCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils import configclass, math
+
 from isaacsim.core.api.materials import PhysicsMaterial
 from isaacsim.core.api.objects import FixedCuboid
 
@@ -30,8 +30,8 @@ class NavEnvCfg(DirectRLEnvCfg):
     observation_space = 3078  # Changed from 8 to 9 to include minimum wall distance
     """
     observation_space = {
-        "state": 9,
-        "image": (64, 64, 3),
+        "state": 6,
+        "image": (32, 32, 3),
     }
     """
     state_space = 0

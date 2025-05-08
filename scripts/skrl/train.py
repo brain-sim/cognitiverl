@@ -102,8 +102,9 @@ import random
 from datetime import datetime
 
 import gymnasium as gym
-import skrl
 from packaging import version
+
+import skrl
 
 # check for minimum supported skrl version
 SKRL_VERSION = "1.4.2"
@@ -119,11 +120,7 @@ if args_cli.ml_framework.startswith("torch"):
 elif args_cli.ml_framework.startswith("jax"):
     from skrl.utils.runner.jax import Runner
 
-import cognitiverl.tasks  # noqa: F401
 import isaaclab_tasks  # noqa: F401
-from isaaclab_rl.skrl import SkrlVecEnvWrapper
-from isaaclab_tasks.utils.hydra import hydra_task_config
-
 from isaaclab.envs import (
     DirectMARLEnv,
     DirectMARLEnvCfg,
@@ -134,6 +131,10 @@ from isaaclab.envs import (
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_pickle, dump_yaml
+from isaaclab_rl.skrl import SkrlVecEnvWrapper
+from isaaclab_tasks.utils.hydra import hydra_task_config
+
+import cognitiverl.tasks  # noqa: F401
 
 # config shortcuts
 algorithm = args_cli.algorithm.lower()
@@ -240,7 +241,7 @@ def main(
     env = SkrlVecEnvWrapper(
         env, ml_framework=args_cli.ml_framework
     )  # same as: `wrap_env(env, wrapper="auto")`
-    
+
     # configure and instantiate the skrl runner
     # https://skrl.readthedocs.io/en/latest/api/utils/runner.html
     runner = Runner(env, agent_cfg)
