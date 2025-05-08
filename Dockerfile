@@ -7,6 +7,7 @@
 # =============================
 
 FROM nvidia/cuda:12.2.0-base-ubuntu22.04
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # Build arguments for custom repo
 ARG REPO_URL
@@ -41,15 +42,19 @@ RUN if [ -n "$GITHUB_PAT" ] && [ -n "$GITHUB_UNAME" ]; then \
 
 WORKDIR /workspace/repo
 
-# Install uv via curl (official method)
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# Ensure uv is in PATH (default install location is ~/.cargo/bin)
-ENV PATH="/root/.cargo/bin:${PATH}"
-
 # Install Python dependencies with uv
-COPY requirements.txt .
-RUN uv pip install -r requirements.txt
+RUN echo "HOME is: $HOME" 
+RUN mkdir -p $HOME/.venv
+RUN uv venv $HOME/.venv/isaaclab_env --python 3.10
+# Use the virtual environment automatically
+ENV VIRTUAL_ENV=$HOME/.venv/isaaclab_env
+# Place entry points in the environment at the front of the path
+ENV PATH="$HOME/.venv/isaaclab_env/bin:$PATH"
+
+COPY requirements_docker.txt .
+RUN uv pip install -r requirements_docker.txt
+
+RUN uv pip install -U "jax[cuda12]"
 
 # --- TurboVNC setup (official repo) ---
 RUN wget -q -O- https://packagecloud.io/dcommander/turbovnc/gpgkey | gpg --dearmor > /etc/apt/trusted.gpg.d/TurboVNC.gpg && \
