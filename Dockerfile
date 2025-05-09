@@ -1,12 +1,12 @@
 # =============================
 # Build the Docker image:
-#   docker build --build-arg REPO_URL=https://github.com/youruser/yourrepo.git --build-arg REPO_BRANCH=main --build-arg GITHUB_UNAME=your_username --build-arg GITHUB_PAT=your_token_here -t my-vnc-image .
+#  docker build --build-arg REPO_URL=https://github.com/youruser/yourrepo.git --build-arg REPO_BRANCH=main --build-arg GITHUB_UNAME=your_username --build-arg GITHUB_PAT=your_token_here -t my-vnc-image .
 #
 # Run the Docker container (with NVIDIA GPU and port forwarding):
-#   docker run --gpus all -p 5901:5901 -e USER=vncuser -e PASSWORD=vncpassword my-vnc-image
+#  docker run --gpus all -p 5901:5901 -e USER=vncuser -e PASSWORD=vncpassword my-vnc-image
 # =============================
 
-FROM nvidia/cuda:12.2.0-base-ubuntu22.04
+FROM nvidia/cuda:12.6.0-cudnn-runtime-ubuntu22.04
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
 # Build arguments for custom repo
@@ -29,6 +29,8 @@ RUN apt-get update && \
     libxrandr2 \
     libxss1 \
     libxcursor1 \
+    cmake \
+    build-essential \
     && rm -rf /var/lib/apt/lists/*
 
 # Support cloning private repos with GITHUB_PAT
@@ -43,16 +45,31 @@ RUN if [ -n "$GITHUB_PAT" ] && [ -n "$GITHUB_UNAME" ]; then \
 WORKDIR /workspace/repo
 
 # Install Python dependencies with uv
-RUN echo "HOME is: $HOME" 
-RUN mkdir -p $HOME/.venv
-RUN uv venv $HOME/.venv/isaaclab_env --python 3.10
+RUN mkdir -p /root/.venv
+RUN uv venv /root/.venv/isaaclab_env --python 3.10
 # Use the virtual environment automatically
-ENV VIRTUAL_ENV=$HOME/.venv/isaaclab_env
+ENV VIRTUAL_ENV=/root/.venv/isaaclab_env
 # Place entry points in the environment at the front of the path
-ENV PATH="$HOME/.venv/isaaclab_env/bin:$PATH"
+ENV PATH="/root/.venv/isaaclab_env/bin:$PATH"
 
 COPY requirements_docker.txt .
 RUN uv pip install -r requirements_docker.txt
+
+ARG ISAACLAB_BRANCH=main
+RUN if [ -n "$GITHUB_PAT" ] && [ -n "$GITHUB_UNAME" ]; then \
+    git clone --branch $ISAACLAB_BRANCH https://$GITHUB_UNAME:$GITHUB_PAT@github.com/$GITHUB_UNAME/IsaacLab.git /tmp/IsaacLab; \
+    else \
+    git clone --branch $ISAACLAB_BRANCH https://github.com/$GITHUB_UNAME/IsaacLab.git /tmp/IsaacLab; \
+    fi
+# Install IsaacLab (adjust as needed: pip install -e . or pip install .)
+WORKDIR /tmp/IsaacLab
+RUN ./isaaclab.sh --install
+WORKDIR /workspace/repo
+
+# Remove IsaacLab repo if you want to keep the image clean (optional)
+RUN rm -rf /tmp/IsaacLab
+
+
 
 RUN uv pip install -U "jax[cuda12]"
 
@@ -61,26 +78,20 @@ RUN wget -q -O- https://packagecloud.io/dcommander/turbovnc/gpgkey | gpg --dearm
     wget https://raw.githubusercontent.com/TurboVNC/repo/main/TurboVNC.list -O /etc/apt/sources.list.d/TurboVNC.list
 
 # --- VirtualGL setup (official repo) ---
-RUN wget -q -O- https://packagecloud.io/virtualgl/virtualgl/gpgkey | gpg --dearmor > /etc/apt/trusted.gpg.d/VirtualGL.gpg && \
+RUN wget -q -O- https://packagecloud.io/dcommander/virtualgl/gpgkey | gpg --dearmor > /etc/apt/trusted.gpg.d/VirtualGL.gpg && \
     wget https://raw.githubusercontent.com/VirtualGL/repo/main/VirtualGL.list -O /etc/apt/sources.list.d/VirtualGL.list
 
 # --- Install TurboVNC and VirtualGL ---
 RUN apt-get update && \
     apt-get install -y turbovnc virtualgl
 
-# --- Create a non-root user for running VNC ---
-RUN useradd -m vncuser && \
-    echo "vncuser:vncpassword" | chpasswd
+ENV PATH="/opt/TurboVNC/bin:/opt/VirtualGL/bin:${PATH}"
 
-USER vncuser
-WORKDIR /home/vncuser
-
+# Now vncpasswd is available!
 # --- Set up TurboVNC password (default: vncpassword) ---
-RUN mkdir -p /home/vncuser/.vnc && \
-    echo "vncpassword" | vncpasswd -f > /home/vncuser/.vnc/passwd && \
-    chmod 600 /home/vncuser/.vnc/passwd
-
-USER root
+RUN mkdir -p /root/.vnc && \
+    echo "vncpassword" | vncpasswd -f > /root/.vnc/passwd && \
+    chmod 600 /root/.vnc/passwd
 
 # --- Configure VirtualGL (non-interactive defaults) ---
 RUN /opt/VirtualGL/bin/vglserver_config -silent
@@ -92,3 +103,5 @@ EXPOSE 5901
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 CMD ["/entrypoint.sh", "--sim_device", "cuda:0", "--headless", "--task", "CognitiveRL-Nav-v2", "--num_envs", "8"]
+
+# docker build --build-arg REPO_URL=https://github.com/chamorajg/cognitiverl.git --build-arg REPO_BRANCH=docker --build-arg GITHUB_UNAME=chamorajg --build-arg GITHUB_PAT=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 -t my-vnc-image .
