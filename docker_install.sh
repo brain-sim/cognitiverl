@@ -42,3 +42,6 @@ echo "🧪 Testing GPU access within Docker..."
 docker run --rm --gpus all nvidia/cuda:12.2.0-base-ubuntu22.04 nvidia-smi
 
 echo "✅ Installation and configuration complete!"
+
+
+# docker system prune -a --volumes

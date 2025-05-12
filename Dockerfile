@@ -4,7 +4,11 @@
 #
 # Run the Docker container (with NVIDIA GPU and port forwarding):
 #  docker run --gpus all -p 5901:5901 -e USER=vncuser -e PASSWORD=vncpassword my-vnc-image
+#
+# Add the necessary *.usd* files into the docker image before running.
+# COPY source/cognitiverl/cognitiverl/tasks/direct/custom_assets/ /workspace/repo/source/cognitiverl/cognitiverl/tasks/direct/custom_assets/
 # =============================
+
 
 FROM nvidia/cuda:12.6.0-cudnn-runtime-ubuntu22.04
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
@@ -57,19 +61,14 @@ RUN uv pip install -r requirements_docker.txt
 
 ARG ISAACLAB_BRANCH=main
 RUN if [ -n "$GITHUB_PAT" ] && [ -n "$GITHUB_UNAME" ]; then \
-    git clone --branch $ISAACLAB_BRANCH https://$GITHUB_UNAME:$GITHUB_PAT@github.com/$GITHUB_UNAME/IsaacLab.git /tmp/IsaacLab; \
+    git clone --branch $ISAACLAB_BRANCH https://$GITHUB_UNAME:$GITHUB_PAT@github.com/$GITHUB_UNAME/IsaacLab.git /workspace/IsaacLab; \
     else \
-    git clone --branch $ISAACLAB_BRANCH https://github.com/$GITHUB_UNAME/IsaacLab.git /tmp/IsaacLab; \
+    git clone --branch $ISAACLAB_BRANCH https://github.com/$GITHUB_UNAME/IsaacLab.git /workspace/IsaacLab; \
     fi
 # Install IsaacLab (adjust as needed: pip install -e . or pip install .)
-WORKDIR /tmp/IsaacLab
+WORKDIR /workspace/IsaacLab
 RUN ./isaaclab.sh --install
 WORKDIR /workspace/repo
-
-# Remove IsaacLab repo if you want to keep the image clean (optional)
-RUN rm -rf /tmp/IsaacLab
-
-
 
 RUN uv pip install -U "jax[cuda12]"
 
@@ -102,6 +101,8 @@ EXPOSE 5901
 # --- Copy entrypoint script and set as default CMD ---
 COPY entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
-CMD ["/entrypoint.sh", "--sim_device", "cuda:0", "--headless", "--task", "CognitiveRL-Nav-v2", "--num_envs", "8"]
+ENV OMNI_KIT_ACCEPT_EULA="Y"
+CMD ["/entrypoint.sh", "--headless", "--task=CognitiveRL-Nav-v2", "--num_envs=8"]
 
 # docker build --build-arg REPO_URL=https://github.com/chamorajg/cognitiverl.git --build-arg REPO_BRANCH=docker --build-arg GITHUB_UNAME=chamorajg --build-arg GITHUB_PAT=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 -t my-vnc-image .
+# docker run --gpus all -p 5902:5901 -e USER=vncuser -e PASSWORD=vncpassword my-vnc-image
