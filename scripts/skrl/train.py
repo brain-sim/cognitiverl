@@ -14,7 +14,6 @@ a more user-friendly way.
 
 import argparse
 import sys
-
 from isaaclab.app import AppLauncher
 
 # add argparse arguments
@@ -121,9 +120,6 @@ elif args_cli.ml_framework.startswith("jax"):
 
 import cognitiverl.tasks  # noqa: F401
 import isaaclab_tasks  # noqa: F401
-from isaaclab_rl.skrl import SkrlVecEnvWrapper
-from isaaclab_tasks.utils.hydra import hydra_task_config
-
 from isaaclab.envs import (
     DirectMARLEnv,
     DirectMARLEnvCfg,
@@ -134,6 +130,8 @@ from isaaclab.envs import (
 from isaaclab.utils.assets import retrieve_file_path
 from isaaclab.utils.dict import print_dict
 from isaaclab.utils.io import dump_pickle, dump_yaml
+from isaaclab_rl.skrl import SkrlVecEnvWrapper
+from isaaclab_tasks.utils.hydra import hydra_task_config
 
 # config shortcuts
 algorithm = args_cli.algorithm.lower()
@@ -240,7 +238,7 @@ def main(
     env = SkrlVecEnvWrapper(
         env, ml_framework=args_cli.ml_framework
     )  # same as: `wrap_env(env, wrapper="auto")`
-    
+
     # configure and instantiate the skrl runner
     # https://skrl.readthedocs.io/en/latest/api/utils/runner.html
     runner = Runner(env, agent_cfg)

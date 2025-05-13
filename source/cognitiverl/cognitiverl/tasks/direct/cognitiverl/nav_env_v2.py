@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import isaaclab.sim as sim_utils
 import numpy as np
 import torch
-
-import isaaclab.sim as sim_utils
 from isaaclab.assets import Articulation, ArticulationCfg
 from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
 from isaaclab.envs.common import VecEnvStepReturn
@@ -15,6 +14,11 @@ from isaaclab.sensors.camera import TiledCamera, TiledCameraCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils import configclass, math
+from isaaclab_rl.rsl_rl import (
+    RslRlOnPolicyRunnerCfg,
+    RslRlPpoActorCriticCfg,
+    RslRlPpoAlgorithmCfg,
+)
 from isaacsim.core.api.materials import PhysicsMaterial
 from isaacsim.core.api.objects import FixedCuboid
 
@@ -58,6 +62,36 @@ class NavEnvCfg(DirectRLEnvCfg):
     env_spacing = 40.0
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=4096, env_spacing=env_spacing, replicate_physics=True
+    )
+
+
+@configclass
+class RslNavEnvCfg(NavEnvCfg, RslRlOnPolicyRunnerCfg):
+    logger = "wandb"
+    num_steps_per_env = 64
+    max_iterations = 150
+    save_interval = 50
+    experiment_name = "cartpole_direct"
+    empirical_normalization = False
+    policy = RslRlPpoActorCriticCfg(
+        init_noise_std=1.0,
+        actor_hidden_dims=[256, 32],
+        critic_hidden_dims=[256, 32],
+        activation="elu",
+    )
+    algorithm = RslRlPpoAlgorithmCfg(
+        value_loss_coef=1.0,
+        use_clipped_value_loss=True,
+        clip_param=0.2,
+        entropy_coef=0.005,
+        num_learning_epochs=5,
+        num_mini_batches=4,
+        learning_rate=1.0e-3,
+        schedule="adaptive",
+        gamma=0.99,
+        lam=0.95,
+        desired_kl=0.01,
+        max_grad_norm=1.0,
     )
 
 
@@ -382,7 +416,6 @@ class NavEnv(DirectRLEnv):
             # if sensors are added to the scene, make sure we render to reflect changes in reset
             if self.sim.has_rtx_sensors() and self.cfg.rerender_on_reset:
                 self.sim.render()
-            self.camera.reset()
 
         # post-step: step interval event
         if self.cfg.events:
@@ -622,18 +655,20 @@ class NavEnv(DirectRLEnv):
         task_failed = self.episode_length_buf > self.max_episode_length
         vehicle_flipped = self._check_vehicle_flipped()
         task_failed |= vehicle_flipped
-        if torch.any(vehicle_flipped):
-            print(f"Vehicle flipped : {vehicle_flipped}")
-        if torch.any(task_failed):
-            print(f"Task failed : {task_failed}")
-        if torch.any(self.task_completed):
-            print(f"Task completed : {self.task_completed}")
+        debug_size = 5
+        if torch.any(vehicle_flipped[:debug_size]):
+            print(f"Vehicle flipped : {vehicle_flipped[:debug_size]}")
+        if torch.any(task_failed[:debug_size]):
+            print(f"Task failed : {task_failed[:debug_size]}")
+        if torch.any(self.task_completed[:debug_size]):
+            print(f"Task completed : {self.task_completed[:debug_size]}")
         return task_failed, self.task_completed
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
+        self.camera.reset(env_ids)
 
         num_reset = len(env_ids)
         default_state = self.robot.data.default_root_state[env_ids]
