@@ -34,8 +34,8 @@ class NavEnvCfg(DirectRLEnvCfg):
     observation_space = 3078  # Changed from 8 to 9 to include minimum wall distance
     """
     observation_space = {
-        "state": 9,
-        "image": (64, 64, 3),
+        "state": 6,
+        "image": (32, 32, 3),
     }
     """
     state_space = 0

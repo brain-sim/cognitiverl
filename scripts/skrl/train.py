@@ -14,6 +14,7 @@ a more user-friendly way.
 
 import argparse
 import sys
+
 from isaaclab.app import AppLauncher
 
 # add argparse arguments

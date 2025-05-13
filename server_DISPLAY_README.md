@@ -29,7 +29,7 @@ Setting up  VirtualGL on the server machine to enable OpenGL rendering (GPU acce
 1. Download the VirtualGL package from the official website: [VirtualGL Download](https://www.virtualgl.org/)
 2. As root run the following command to install the downloaded package:
    ```bash
-   sudo sh -C "wget -q -O- https://packagecloud.io/virtualgl/virtualgl/gpgkey | gpg --dearmor >/etc/apt/trusted.gpg.d/VirtualGL.gpg"
+   sudo sh -C "wget -q -O- https://packagecloud.io/dcommander/virtualgl/gpgkey | gpg --dearmor >/etc/apt/trusted.gpg.d/VirtualGL.gpg"
    ```
 3. Add VirtualGL list to the system:
     ```bash
