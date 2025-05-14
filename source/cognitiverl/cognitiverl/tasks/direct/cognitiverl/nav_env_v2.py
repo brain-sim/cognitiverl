@@ -336,7 +336,7 @@ class NavEnv(DirectRLEnv):
             ),
             dim=-1,
         )
-        state_obs = torch.nan_to_num(state_obs)
+        state_obs = torch.nan_to_num(state_obs, posinf=0.0, neginf=0.0)
         if torch.any(state_obs.isnan()):
             raise ValueError("Observations cannot be NAN")
         return {"policy": state_obs}
@@ -588,12 +588,21 @@ class NavEnv(DirectRLEnv):
 
         composite_reward = (
             # position_progress_rew * self.position_progress_weight +
-            torch.nan_to_num(position_progress_rew) * 3
-            + torch.nan_to_num(target_heading_rew) * 0.5
-            + torch.nan_to_num(goal_reached * self.goal_reached_bonus)
-            + torch.nan_to_num(linear_speed / (self.target_heading_error + 1e-8)) * 0.05
-            + torch.nan_to_num(laziness_penalty)  # Updated laziness penalty
-            + torch.nan_to_num(wall_penalty)
+            torch.nan_to_num(position_progress_rew, posinf=0.0, neginf=0.0) * 3
+            + torch.nan_to_num(target_heading_rew, posinf=0.0, neginf=0.0) * 0.5
+            + torch.nan_to_num(
+                goal_reached * self.goal_reached_bonus, posinf=0.0, neginf=0.0
+            )
+            + torch.nan_to_num(
+                linear_speed / (self.target_heading_error + 1e-8),
+                posinf=0.0,
+                neginf=0.0,
+            )
+            * 0.05
+            + torch.nan_to_num(
+                laziness_penalty, posinf=0.0, neginf=0.0
+            )  # Updated laziness penalty
+            + torch.nan_to_num(wall_penalty, posinf=0.0, neginf=0.0)
         )
 
         # Create a tensor of 0s (future), 1s (current), and 2s (completed)
