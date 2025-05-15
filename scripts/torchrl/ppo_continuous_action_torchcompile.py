@@ -16,6 +16,10 @@ from isaaclab.utils import configclass
 from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
 from torch.distributions.normal import Normal
 
+os.environ["TORCHDYNAMO_INLINE_INBUILT_NN_MODULES"] = "1"
+
+import os
+
 try:
     from isaaclab.app import AppLauncher
 except ImportError:
@@ -103,6 +107,11 @@ class ExperimentArgs:
 
     measure_burnin: int = 3
 
+    compile: bool = True
+    """whether to use torch.compile."""
+    cudagraphs: bool = True
+    """whether to use cudagraphs on top of compile."""
+
 
 @configclass
 class Args(ExperimentArgs, EnvArgs):
@@ -145,7 +154,7 @@ def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **a
             cfg=cfg,
             render_mode="rgb_array" if capture_video else None,
         )
-        env = RslRlVecEnvWrapper(env, clip_actions=1.0)
+        env = RslRlVecEnvWrapper(env)
         # env = gym.wrappers.RecordEpisodeStatistics(env)
         return env
 
@@ -184,7 +193,7 @@ class Agent(nn.Module):
             nn.ELU(),
             layer_init(nn.Linear(64, 64)),
             nn.ELU(),
-            layer_init(nn.Linear(64, np.prod(envs.action_space.shape[1:])), std=0.01),
+            layer_init(nn.Linear(64, np.prod(envs.action_space.shape[1:])), std=1.0),
         )
         self.actor_logstd = nn.Parameter(
             torch.zeros(1, np.prod(envs.action_space.shape[1:]))
