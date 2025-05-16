@@ -98,7 +98,13 @@ class RslNavEnvCfg(NavEnvCfg, RslRlOnPolicyRunnerCfg):
 class NavEnv(DirectRLEnv):
     cfg: NavEnvCfg
 
-    def __init__(self, cfg: NavEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(
+        self,
+        cfg: NavEnvCfg,
+        render_mode: str | None = None,
+        debug: bool = False,
+        **kwargs,
+    ):
         # Add room size as a class attribute
         self.room_size = 40.0  # Adjust as needed
 
@@ -145,6 +151,8 @@ class NavEnv(DirectRLEnv):
         self.max_laziness = (
             10.0  # Cap on accumulated laziness to prevent extreme penalties
         )
+
+        self._debug = debug
 
     def _setup_scene(self):
         # Create a large ground plane without grid
@@ -562,7 +570,7 @@ class NavEnv(DirectRLEnv):
             self._debug_counter = 0
         self._debug_counter += 1
 
-        if self._debug_counter % 100 == 0:
+        if self._debug and self._debug_counter % 100 == 0:
             with torch.no_grad():
                 debug_size = 5
                 print("\nLaziness Debug (Step {}):".format(self._debug_counter))
@@ -665,12 +673,13 @@ class NavEnv(DirectRLEnv):
         vehicle_flipped = self._check_vehicle_flipped()
         task_failed |= vehicle_flipped
         debug_size = 5
-        if torch.any(vehicle_flipped[:debug_size]):
-            print(f"Vehicle flipped : {vehicle_flipped[:debug_size]}")
-        if torch.any(task_failed[:debug_size]):
-            print(f"Task failed : {task_failed[:debug_size]}")
-        if torch.any(self.task_completed[:debug_size]):
-            print(f"Task completed : {self.task_completed[:debug_size]}")
+        if self._debug:
+            if torch.any(vehicle_flipped[:debug_size]):
+                print(f"Vehicle flipped : {vehicle_flipped[:debug_size]}")
+            if torch.any(task_failed[:debug_size]):
+                print(f"Task failed : {task_failed[:debug_size]}")
+            if torch.any(self.task_completed[:debug_size]):
+                print(f"Task completed : {self.task_completed[:debug_size]}")
         return task_failed, self.task_completed
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
@@ -811,7 +820,11 @@ class NavEnv(DirectRLEnv):
         ]  # Get minimum distance for each environment
 
         # Add debug printing for the first few environments (every 100 steps)
-        if hasattr(self, "_debug_counter") and self._debug_counter % 100 == 0:
+        if (
+            self._debug
+            and hasattr(self, "_debug_counter")
+            and self._debug_counter % 100 == 0
+        ):
             with torch.no_grad():
                 debug_size = 5
                 print("\nDistance Calculation Debug:")
