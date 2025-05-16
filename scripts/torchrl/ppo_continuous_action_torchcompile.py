@@ -311,6 +311,7 @@ def main(args):
                 for info in infos["final_info"]:
                     r = float(info["episode"]["r"].reshape(()))
                     max_ep_ret = max(max_ep_ret, r)
+                    print(r)
                     avg_returns.append(r)
                 desc = f"global_step={global_step}, episodic_return={torch.tensor(avg_returns).mean(): 4.2f} (max={max_ep_ret: 4.2f})"
 

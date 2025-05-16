@@ -4,6 +4,7 @@ import random
 import time
 from collections import deque
 from dataclasses import asdict
+from typing import Any, Deque, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
@@ -12,14 +13,9 @@ import torch.nn as nn
 import torch.optim as optim
 import tqdm
 import wandb
+from gymnasium import Wrapper
 from isaaclab.utils import configclass
-from isaaclab_rl.rsl_rl import RslRlVecEnvWrapper
 from torch.distributions.normal import Normal
-
-try:
-    from isaaclab.app import AppLauncher
-except ImportError:
-    raise ImportError("Isaac Lab is not installed. Please install it first.")
 
 
 @configclass
@@ -28,7 +24,7 @@ class EnvArgs:
     """the id of the environment"""
     env_cfg_entry_point: str = "env_cfg_entry_point"
     """the entry point of the environment configuration"""
-    num_envs: int = 4096
+    num_envs: int = 16
     """the number of parallel environments to simulate"""
     seed: int = 1
     """seed of the environment"""
@@ -109,6 +105,124 @@ class Args(ExperimentArgs, EnvArgs):
     pass
 
 
+def launch_app(args):
+    from argparse import Namespace
+
+    app_launcher = AppLauncher(Namespace(**asdict(args)))
+    return app_launcher.app
+
+
+def get_args():
+    exp_args = ExperimentArgs()
+    env_args = EnvArgs()
+    merged_args = {**asdict(exp_args), **asdict(env_args)}
+    args = Args(**merged_args)
+    return args
+
+
+try:
+    from isaaclab.app import AppLauncher
+
+    args = get_args()
+    simulation_app = launch_app(args)
+except ImportError:
+    raise ImportError("Isaac Lab is not installed. Please install it first.")
+
+from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
+
+
+class IsaacLabRecordEpisodeStatistics(Wrapper):
+    """
+    Vectorized wrapper for DirectRLEnv or ManagerBasedRLEnv that:
+      - Tracks per-env returns & lengths as torch.Tensor
+      - Inserts episode stats into `info` when an env finishes
+      - Keeps history in Python deques
+    """
+
+    def __init__(
+        self,
+        env: Union[DirectRLEnv, ManagerBasedRLEnv],
+        deque_size: int = 100,
+    ):
+        super().__init__(env)
+        self.num_envs = env.num_envs
+        # Tensor‐based accumulators on CPU
+        self._returns = torch.zeros(self.num_envs, dtype=torch.float32)
+        self._lengths = torch.zeros(self.num_envs, dtype=torch.int64)
+        # Start times for each sub-env
+        self._start_times = torch.tensor(
+            [time.time()] * self.num_envs, dtype=torch.float64
+        )
+        # History
+        self.return_queue: Deque[float] = deque(maxlen=deque_size)
+        self.length_queue: Deque[int] = deque(maxlen=deque_size)
+        print("IsaacLabRecordEpisodeStatistics initialized")
+
+    def reset(self, **kwargs) -> Tuple[Any, dict]:
+        obs, info = self.env.reset(**kwargs)
+        now = time.time()
+        # Zero out tensors
+        self._returns.zero_()
+        self._lengths.zero_()
+        # Reset start times
+        self._start_times = torch.tensor([now] * self.num_envs, dtype=torch.float64)
+        return obs, info
+
+    def step(self, actions: Any) -> Tuple[Any, Any, Any, Any, dict]:
+        obs, rewards, terminated, truncated, infos = self.env.step(actions)
+        dones = terminated | truncated  # boolean Tensor
+
+        # Convert rewards to Tensor if needed
+        if not torch.is_tensor(rewards):
+            rewards = torch.as_tensor(rewards, dtype=torch.float32)
+
+        # 1) Vectorized accumulation
+        self._returns += rewards
+        # add 1 to every env’s length
+        self._lengths += 1
+
+        # 2) Handle all envs that just finished
+        done_indices = torch.nonzero(dones, as_tuple=False).squeeze(1)
+        if done_indices.numel() > 0:
+            # Gather episode stats as Python lists
+            ep_returns = self._returns[done_indices].tolist()
+            ep_lengths = self._lengths[done_indices].tolist()
+            ep_times = (
+                torch.tensor(time.time(), dtype=torch.float64)
+                - self._start_times[done_indices]
+            ).tolist()
+
+            # Insert into infos
+            # We'll use lists of length=num_envs, with None for non-finished slots
+            r_list = [None] * self.num_envs
+            l_list = [None] * self.num_envs
+            t_list = [None] * self.num_envs
+            for idx, (r, l, t) in zip(
+                done_indices.tolist(),
+                zip(ep_returns, ep_lengths, ep_times, strict=True),
+            ):
+                r_list[idx] = r
+                l_list[idx] = l
+                t_list[idx] = t
+
+            infos.setdefault("episode", {})
+            infos["episode"]["r"] = r_list
+            infos["episode"]["l"] = l_list
+            infos["episode"]["t"] = t_list
+
+            # Update history deques
+            for r, l in zip(ep_returns, ep_lengths, strict=True):
+                self.return_queue.append(r)
+                self.length_queue.append(l)
+
+            # 3) Reset finished envs’ counters
+            self._returns[dones] = 0.0
+            self._lengths[dones] = 0
+            self._start_times[dones] = time.time()
+
+        return obs, rewards, terminated, truncated, infos
+
+
 def make_env(env_id, idx, capture_video, run_name, gamma):
     def thunk():
         if capture_video and idx == 0:
@@ -145,18 +259,11 @@ def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **a
             cfg=cfg,
             render_mode="rgb_array" if capture_video else None,
         )
-        env = RslRlVecEnvWrapper(env, clip_actions=1.0)
-        # env = gym.wrappers.RecordEpisodeStatistics(env)
+        env = IsaacLabRecordEpisodeStatistics(env)
+        # env = RslRlVecEnvWrapper(env, clip_actions=1.0)
         return env
 
     return thunk
-
-
-def launch_app(args):
-    from argparse import Namespace
-
-    app_launcher = AppLauncher(Namespace(**asdict(args)))
-    return app_launcher
 
 
 def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
@@ -297,7 +404,9 @@ def main(args):
             # next_done = torch.logical_or(terminations, truncations).float()
             next_obs, reward, next_done, infos = envs.step(action)
             rewards[step] = reward.view(-1)
-
+            print("=" * 20)
+            print(infos.keys())
+            print("=" * 20)
             if "final_info" in infos:
                 for info in infos["final_info"]:
                     r = float(info["episode"]["r"].reshape(()))
@@ -423,9 +532,9 @@ def main(args):
 
 
 if __name__ == "__main__":
-    exp_args = ExperimentArgs()
-    env_args = EnvArgs()
-    merged_args = {**asdict(exp_args), **asdict(env_args)}
-    args = Args(**merged_args)
-    app_launcher = launch_app(env_args)
-    main(args)
+    try:
+        os.environ["WANDB_MODE"] = "dryrun"
+        main(args)
+    except Exception:
+        simulation_app.close()
+    simulation_app.close()

@@ -61,15 +61,15 @@ navigation_CFG = ArticulationCfg(
     actuators={
         "throttle": ImplicitActuatorCfg(
             joint_names_expr=["Wheel.*"],
-            effort_limit=40000.0,
-            velocity_limit=100.0,
+            effort_limit_sim=40000.0,
+            velocity_limit_sim=100.0,
             stiffness=0.0,
             damping=100000.0,
         ),
         "steering": ImplicitActuatorCfg(
             joint_names_expr=["Knuckle__Upright__Front.*"],
-            effort_limit=40000.0,
-            velocity_limit=100.0,
+            effort_limit_sim=40000.0,
+            velocity_limit_sim=100.0,
             stiffness=1000.0,
             damping=0.0,
         ),
