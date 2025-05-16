@@ -16,6 +16,7 @@ import wandb
 from gymnasium import Wrapper
 from isaaclab.utils import configclass
 from torch.distributions.normal import Normal
+from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
 
 
 @configclass
@@ -99,6 +100,9 @@ class ExperimentArgs:
 
     measure_burnin: int = 3
 
+    # Agent config
+    agent_type: str = "VisionAgent"
+
 
 @configclass
 class Args(ExperimentArgs, EnvArgs):
@@ -133,10 +137,10 @@ from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
 
 class IsaacLabRecordEpisodeStatistics(Wrapper):
     """
-    Vectorized wrapper for DirectRLEnv or ManagerBasedRLEnv that:
-      - Tracks per-env returns & lengths as torch.Tensor
-      - Inserts episode stats into `info` when an env finishes
-      - Keeps history in Python deques
+    Gymnasium-style wrapper for DirectRLEnv or ManagerBasedRLEnv that:
+      - Tracks per-env returns & lengths as torch.Tensors,
+      - Inserts 'episode' stats when each sub-env finishes,
+      - Maintains deque histories of recent returns/lengths.
     """
 
     def __init__(
@@ -145,81 +149,89 @@ class IsaacLabRecordEpisodeStatistics(Wrapper):
         deque_size: int = 100,
     ):
         super().__init__(env)
-        self.num_envs = env.num_envs
-        # Tensor‐based accumulators on CPU
-        self._returns = torch.zeros(self.num_envs, dtype=torch.float32)
-        self._lengths = torch.zeros(self.num_envs, dtype=torch.int64)
-        # Start times for each sub-env
-        self._start_times = torch.tensor(
-            [time.time()] * self.num_envs, dtype=torch.float64
+        # Unwrap through any gym.Wrapper layers to find the true vector env
+        self.num_envs = env.unwrapped.num_envs
+        self.device = env.unwrapped.device
+
+        # Tensor-based counters (on CPU)
+        self._returns = torch.zeros(
+            self.num_envs, dtype=torch.float32, device=self.device
         )
-        # History
+        self._lengths = torch.zeros(
+            self.num_envs, dtype=torch.int64, device=self.device
+        )
+        # Track start times in a tensor for easy vector math
+        now = time.time()
+        self._start_times = torch.full(
+            (self.num_envs,), now, dtype=torch.float64, device=self.device
+        )
+
+        # History buffers
         self.return_queue: Deque[float] = deque(maxlen=deque_size)
         self.length_queue: Deque[int] = deque(maxlen=deque_size)
-        print("IsaacLabRecordEpisodeStatistics initialized")
 
     def reset(self, **kwargs) -> Tuple[Any, dict]:
+        """Reset all sub-envs and zero out stats."""
         obs, info = self.env.reset(**kwargs)
         now = time.time()
-        # Zero out tensors
         self._returns.zero_()
         self._lengths.zero_()
-        # Reset start times
-        self._start_times = torch.tensor([now] * self.num_envs, dtype=torch.float64)
+        self._start_times.fill_(now)
         return obs, info
 
     def step(self, actions: Any) -> Tuple[Any, Any, Any, Any, dict]:
+        """
+        Step all sub‐envs, update tensorized stats, and emit a list of episode
+        dicts (one per env that just finished) under infos["episode"].
+        """
+        # 1) run the underlying env step
         obs, rewards, terminated, truncated, infos = self.env.step(actions)
-        dones = terminated | truncated  # boolean Tensor
 
-        # Convert rewards to Tensor if needed
+        # 2) build a boolean mask of which envs just finished
+        dones = (terminated | truncated).to(self.device)
+
+        # 3) ensure rewards lives on the same device
         if not torch.is_tensor(rewards):
-            rewards = torch.as_tensor(rewards, dtype=torch.float32)
+            rewards = torch.as_tensor(rewards, dtype=torch.float32, device=self.device)
 
-        # 1) Vectorized accumulation
+        # 4) vectorized accumulation of returns and lengths
         self._returns += rewards
-        # add 1 to every env’s length
         self._lengths += 1
 
-        # 2) Handle all envs that just finished
-        done_indices = torch.nonzero(dones, as_tuple=False).squeeze(1)
-        if done_indices.numel() > 0:
-            # Gather episode stats as Python lists
-            ep_returns = self._returns[done_indices].tolist()
-            ep_lengths = self._lengths[done_indices].tolist()
-            ep_times = (
-                torch.tensor(time.time(), dtype=torch.float64)
-                - self._start_times[done_indices]
-            ).tolist()
+        # 5) if any envs finished, gather their stats
+        done_idx = torch.nonzero(dones, as_tuple=True)[0]
+        if done_idx.numel() > 0:
+            # capture the current time as a tensor
+            now_t = torch.tensor(
+                time.time(), device=self.device, dtype=self._start_times.dtype
+            )
+            # slice out the returns, lengths, and elapsed times for finished envs
+            returns_d = self._returns[done_idx]
+            lengths_d = self._lengths[done_idx]
+            times_d = now_t - self._start_times[done_idx]
 
-            # Insert into infos
-            # We'll use lists of length=num_envs, with None for non-finished slots
-            r_list = [None] * self.num_envs
-            l_list = [None] * self.num_envs
-            t_list = [None] * self.num_envs
-            for idx, (r, l, t) in zip(
-                done_indices.tolist(),
-                zip(ep_returns, ep_lengths, ep_times, strict=True),
-            ):
-                r_list[idx] = r
-                l_list[idx] = l
-                t_list[idx] = t
+            # convert those tensors once into Python lists
+            r_list = returns_d.tolist()
+            l_list = lengths_d.tolist()
+            t_list = times_d.tolist()
 
+            # build the list of episode‐stats dicts
             infos.setdefault("episode", {})
             infos["episode"]["r"] = r_list
             infos["episode"]["l"] = l_list
             infos["episode"]["t"] = t_list
 
-            # Update history deques
-            for r, l in zip(ep_returns, ep_lengths, strict=True):
-                self.return_queue.append(r)
-                self.length_queue.append(l)
+            # append to history deques
+            self.return_queue.extend(r_list)
+            self.length_queue.extend(l_list)
 
-            # 3) Reset finished envs’ counters
-            self._returns[dones] = 0.0
-            self._lengths[dones] = 0
-            self._start_times[dones] = time.time()
+            # reset counters for the finished envs
+            mask = dones
+            self._returns[mask] = 0.0
+            self._lengths[mask] = 0
+            self._start_times[mask] = now_t
 
+        # 6) return exactly the same API as Gym’s vector wrapper
         return obs, rewards, terminated, truncated, infos
 
 
@@ -246,6 +258,7 @@ def make_env(env_id, idx, capture_video, run_name, gamma):
 
 def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **args):
     import isaaclab_tasks  # noqa: F401
+    from isaaclab_rl.rsl_rl.vecenv_wrapper import RslRlVecEnvWrapper
     from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
     import cognitiverl.tasks  # noqa: F401
@@ -260,7 +273,7 @@ def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **a
             render_mode="rgb_array" if capture_video else None,
         )
         env = IsaacLabRecordEpisodeStatistics(env)
-        # env = RslRlVecEnvWrapper(env, clip_actions=1.0)
+        env = RslRlVecEnvWrapper(env, clip_actions=1.0)
         return env
 
     return thunk
@@ -270,6 +283,94 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
+
+
+class VisionAgent(nn.Module):
+    """
+    Convolutional agent using a pretrained MobileNetV3 backbone for image feature
+    extraction, followed by fully connected layers for policy and value estimation.
+    """
+
+    def __init__(self, envs):
+        super().__init__()
+
+        # Image input dimensions
+        channels, height, width = 3, 32, 32
+        self.img_size = (channels, height, width)
+
+        # Load and adapt MobileNetV3-small backbone
+        backbone = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.DEFAULT)
+        backbone.eval()  # freeze backbone in eval mode
+
+        # Adjust first conv layer for 32x32 inputs
+        backbone.features[0][0] = nn.Conv2d(
+            in_channels=channels,
+            out_channels=16,
+            kernel_size=3,
+            stride=2,
+            padding=1,
+            bias=False,
+        )
+        self.backbone = nn.Sequential(*backbone.features)
+
+        # Determine feature dimension
+        with torch.no_grad():
+            dummy = torch.zeros(1, channels, height, width)
+            feat_dim = self.backbone(dummy).view(1, -1).size(1)
+
+        # MLP for extracted features
+        self.feature_net = nn.Sequential(
+            layer_init(nn.Linear(feat_dim, 128)),
+            nn.ELU(),
+            layer_init(nn.Linear(128, 64)),
+            nn.ELU(),
+        )
+
+        # Critic head
+        self.critic = layer_init(nn.Linear(64, 1), std=1.0)
+
+        # Actor head (mean) and log std parameter
+        action_dim = int(np.prod(envs.action_space.shape[1:]))
+        self.actor_mean = layer_init(nn.Linear(64, action_dim), std=1.0)
+        self.actor_logstd = nn.Parameter(torch.zeros(1, action_dim))
+
+    def extract_image(self, x: torch.Tensor) -> torch.Tensor:
+        """Extract features from image portion of the state vector."""
+        bsz = x.size(0)
+        c, h, w = self.img_size
+        # reshape and forward through backbone
+        imgs = x[:, : c * h * w].view(bsz, c, h, w)
+        with torch.no_grad():
+            feats = self.backbone(imgs)
+        return feats.view(bsz, -1)
+
+    def get_value(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute state-value from raw input."""
+        img_feats = self.extract_image(x)
+        h = self.feature_net(img_feats)
+        return self.critic(h)
+
+    def get_action_and_value(
+        self, x: torch.Tensor, action: torch.Tensor = None
+    ) -> tuple:
+        """Compute action, log-prob, entropy, and value for input states."""
+        img_feats = self.extract_image(x)
+        h = self.feature_net(img_feats)
+
+        mean = self.actor_mean(h)
+        logstd = self.actor_logstd.expand_as(mean)
+        logstd = torch.clamp(logstd, -20, 2)
+        std = torch.exp(logstd)
+        dist = Normal(mean, std)
+
+        if action is None:
+            action = dist.rsample()
+
+        logprob = dist.log_prob(action).sum(dim=1)
+        entropy = dist.entropy().sum(dim=1)
+        value = self.critic(h).view(-1)
+
+        return action, logprob, entropy, value
 
 
 class Agent(nn.Module):
@@ -350,7 +451,10 @@ def main(args):
         "only continuous action space is supported"
     )
 
-    agent = Agent(envs).to(device)
+    if args.agent_type == "VisionAgent":
+        agent = VisionAgent(envs).to(device)
+    else:
+        agent = Agent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
@@ -404,12 +508,8 @@ def main(args):
             # next_done = torch.logical_or(terminations, truncations).float()
             next_obs, reward, next_done, infos = envs.step(action)
             rewards[step] = reward.view(-1)
-            print("=" * 20)
-            print(infos.keys())
-            print("=" * 20)
-            if "final_info" in infos:
-                for info in infos["final_info"]:
-                    r = float(info["episode"]["r"].reshape(()))
+            if "episode" in infos:
+                for r in infos["episode"]["r"]:
                     max_ep_ret = max(max_ep_ret, r)
                     avg_returns.append(r)
                 desc = f"global_step={global_step}, episodic_return={torch.tensor(avg_returns).mean(): 4.2f} (max={max_ep_ret: 4.2f})"
@@ -535,6 +635,7 @@ if __name__ == "__main__":
     try:
         os.environ["WANDB_MODE"] = "dryrun"
         main(args)
-    except Exception:
+    except Exception as e:
+        print("Exception:", e)
+    finally:
         simulation_app.close()
-    simulation_app.close()
