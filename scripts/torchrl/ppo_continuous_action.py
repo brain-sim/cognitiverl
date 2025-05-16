@@ -25,7 +25,7 @@ class EnvArgs:
     """the id of the environment"""
     env_cfg_entry_point: str = "env_cfg_entry_point"
     """the entry point of the environment configuration"""
-    num_envs: int = 16
+    num_envs: int = 64
     """the number of parallel environments to simulate"""
     seed: int = 1
     """seed of the environment"""

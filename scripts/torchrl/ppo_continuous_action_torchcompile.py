@@ -32,7 +32,7 @@ class EnvArgs:
     """the id of the environment"""
     env_cfg_entry_point: str = "env_cfg_entry_point"
     """the entry point of the environment configuration"""
-    num_envs: int = 16
+    num_envs: int = 64
     """the number of parallel environments to simulate"""
     seed: int = 1
     """seed of the environment"""
@@ -110,9 +110,9 @@ class ExperimentArgs:
     # Agent config
     agent_type: str = "Agent"
 
-    compile: bool = False
+    compile: bool = True
     """whether to use torch.compile."""
-    cudagraphs: bool = False
+    cudagraphs: bool = True
     """whether to use cudagraphs on top of compile."""
 
 
@@ -477,8 +477,7 @@ def main(args):
             next_obs, reward, next_done, infos = step_func(action)
 
             if "episode" in infos:
-                for r in infos["episode"]["r"]:
-                    avg_returns.append(r)
+                avg_returns.extend(infos["episode"]["r"])
                 # desc = f"global_step={global_step}, episodic_return={torch.tensor(avg_returns).mean(): 4.2f} (max={max_ep_ret: 4.2f})"
 
             ts.append(
@@ -639,7 +638,7 @@ def main(args):
 
     if args.cudagraphs:
         policy = CudaGraphModule(policy)
-        gae = CudaGraphModule(gae)
+        # gae = CudaGraphModule(gae)
         update = CudaGraphModule(update)
 
     # TRY NOT TO MODIFY: start the game
