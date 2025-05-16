@@ -1,6 +1,7 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppo_continuous_actionpy
 import os
 import random
+import sys
 import time
 from collections import deque
 from dataclasses import asdict
@@ -13,10 +14,11 @@ import torch.nn as nn
 import torch.optim as optim
 import tqdm
 import wandb
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from gymnasium import Wrapper
 from isaaclab.utils import configclass
-from torch.distributions.normal import Normal
-from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
+from models import CNNAgent, MLPAgent
 
 
 @configclass
@@ -101,7 +103,7 @@ class ExperimentArgs:
     measure_burnin: int = 3
 
     # Agent config
-    agent_type: str = "VisionAgent"
+    agent_type: str = "CNNAgent"
 
 
 @configclass
@@ -279,12 +281,6 @@ def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **a
     return thunk
 
 
-def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
-    torch.nn.init.orthogonal_(layer.weight, std)
-    torch.nn.init.constant_(layer.bias, bias_const)
-    return layer
-
-
 def seed_everything(envs, seed):
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
@@ -294,138 +290,6 @@ def seed_everything(envs, seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = True
     envs.seed(seed=seed)
-
-
-class VisionAgent(nn.Module):
-    """
-    Convolutional agent using a pretrained MobileNetV3 backbone for image feature
-    extraction, followed by fully connected layers for policy and value estimation.
-    """
-
-    def __init__(self, envs):
-        super().__init__()
-
-        # Image input dimensions
-        channels, height, width = 3, 32, 32
-        self.img_size = (channels, height, width)
-
-        # Load and adapt MobileNetV3-small backbone
-        backbone = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.DEFAULT)
-        backbone.eval()  # freeze backbone in eval mode
-
-        # Adjust first conv layer for 32x32 inputs
-        backbone.features[0][0] = nn.Conv2d(
-            in_channels=channels,
-            out_channels=16,
-            kernel_size=3,
-            stride=2,
-            padding=1,
-            bias=False,
-        )
-        self.backbone = nn.Sequential(*backbone.features)
-
-        # Determine feature dimension
-        with torch.no_grad():
-            dummy = torch.zeros(1, channels, height, width)
-            feat_dim = self.backbone(dummy).view(1, -1).size(1)
-
-        # MLP for extracted features
-        self.feature_net = nn.Sequential(
-            layer_init(nn.Linear(feat_dim, 128)),
-            nn.ELU(),
-            layer_init(nn.Linear(128, 64)),
-            nn.ELU(),
-        )
-
-        # Critic head
-        self.critic = layer_init(nn.Linear(64, 1), std=1.0)
-
-        # Actor head (mean) and log std parameter
-        action_dim = int(np.prod(envs.action_space.shape[1:]))
-        self.actor_mean = layer_init(nn.Linear(64, action_dim), std=1.0)
-        self.actor_logstd = nn.Parameter(torch.zeros(1, action_dim))
-
-    def extract_image(self, x: torch.Tensor) -> torch.Tensor:
-        """Extract features from image portion of the state vector."""
-        bsz = x.size(0)
-        c, h, w = self.img_size
-        # reshape and forward through backbone
-        imgs = x[:, : c * h * w].view(bsz, c, h, w)
-        with torch.no_grad():
-            feats = self.backbone(imgs)
-        return feats.view(bsz, -1)
-
-    def get_value(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute state-value from raw input."""
-        img_feats = self.extract_image(x)
-        h = self.feature_net(img_feats)
-        return self.critic(h)
-
-    def get_action_and_value(
-        self, x: torch.Tensor, action: torch.Tensor = None
-    ) -> tuple:
-        """Compute action, log-prob, entropy, and value for input states."""
-        img_feats = self.extract_image(x)
-        h = self.feature_net(img_feats)
-
-        mean = self.actor_mean(h)
-        logstd = self.actor_logstd.expand_as(mean)
-        logstd = torch.clamp(logstd, -20, 2)
-        std = torch.exp(logstd)
-        dist = Normal(mean, std)
-
-        if action is None:
-            action = dist.rsample()
-
-        logprob = dist.log_prob(action).sum(dim=1)
-        entropy = dist.entropy().sum(dim=1)
-        value = self.critic(h).view(-1)
-
-        return action, logprob, entropy, value
-
-
-class Agent(nn.Module):
-    def __init__(self, envs):
-        super().__init__()
-        self.critic = nn.Sequential(
-            layer_init(
-                nn.Linear(np.array(envs.observation_space.shape[1:]).prod(), 64)
-            ),
-            nn.ELU(),
-            layer_init(nn.Linear(64, 64)),
-            nn.ELU(),
-            layer_init(nn.Linear(64, 1), std=1.0),
-        )
-        self.actor_mean = nn.Sequential(
-            layer_init(
-                nn.Linear(np.array(envs.observation_space.shape[1:]).prod(), 64)
-            ),
-            nn.ELU(),
-            layer_init(nn.Linear(64, 64)),
-            nn.ELU(),
-            layer_init(nn.Linear(64, np.prod(envs.action_space.shape[1:])), std=0.01),
-        )
-        self.actor_logstd = nn.Parameter(
-            torch.zeros(1, np.prod(envs.action_space.shape[1:]))
-        )
-
-    def get_value(self, x):
-        return self.critic(x)
-
-    def get_action_and_value(self, x, action=None):
-        action_mean = self.actor_mean(x)
-        action_logstd = self.actor_logstd.expand_as(action_mean)
-        action_logstd = torch.clamp(action_logstd, -20, 2)
-        action_std = torch.exp(action_logstd)
-        probs = Normal(action_mean, action_std)
-        if action is None:
-            action = probs.sample()
-        return (
-            action,
-            probs.log_prob(action).sum(1),
-            probs.entropy().sum(1),
-            self.critic(x),
-        )
 
 
 def main(args):
@@ -458,10 +322,10 @@ def main(args):
         "only continuous action space is supported"
     )
 
-    if args.agent_type == "VisionAgent":
-        agent = VisionAgent(envs).to(device)
+    if args.agent_type == "CNNAgent":
+        agent = CNNAgent(envs).to(device)
     else:
-        agent = Agent(envs).to(device)
+        agent = MLPAgent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup

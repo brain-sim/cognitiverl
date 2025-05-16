@@ -2,56 +2,17 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import isaaclab.sim as sim_utils
 import numpy as np
 import torch
-
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, ArticulationCfg
-from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
+from isaaclab.assets import Articulation
+from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers
-from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sim import SimulationCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.utils import configclass
 from isaacsim.core.api.materials import PhysicsMaterial
 from isaacsim.core.api.objects import FixedCuboid
 
-from .nav import navigation_CFG
-from .waypoint import WAYPOINT_CFG
-
-
-@configclass
-class NavEnvCfg(DirectRLEnvCfg):
-    decimation = 4
-    episode_length_s = 30.0
-    action_space = 2
-    observation_space = 9  # Changed from 8 to 9 to include minimum wall distance
-
-    state_space = 0
-    sim: SimulationCfg = SimulationCfg(dt=1 / 60, render_interval=decimation)
-    robot_cfg: ArticulationCfg = navigation_CFG.replace(
-        prim_path="/World/envs/env_.*/Robot",
-        spawn=navigation_CFG.spawn.replace(
-            scale=(0.03, 0.03, 0.03)
-        ),  # 3D vector for scaling
-    )
-    waypoint_cfg = WAYPOINT_CFG
-
-    throttle_dof_name = [
-        "Wheel__Knuckle__Front_Left",
-        "Wheel__Knuckle__Front_Right",
-        "Wheel__Upright__Rear_Right",
-        "Wheel__Upright__Rear_Left",
-    ]
-    steering_dof_name = [
-        "Knuckle__Upright__Front_Right",
-        "Knuckle__Upright__Front_Left",
-    ]
-
-    env_spacing = 40.0
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=4096, env_spacing=env_spacing, replicate_physics=True
-    )
+from .nav_env_cfg import NavEnvCfg
 
 
 class NavEnv(DirectRLEnv):
@@ -84,13 +45,13 @@ class NavEnv(DirectRLEnv):
             (self.num_envs, self._num_goals, 3), device=self.device, dtype=torch.float32
         )
         self.env_spacing = self.cfg.env_spacing
-        self.course_length_coefficient = 2.5
-        self.course_width_coefficient = 2.0
-        self.position_tolerance = 1
-        self.goal_reached_bonus = 20.0
-        self.position_progress_weight = 1.0
-        self.heading_coefficient = 0.25
-        self.heading_progress_weight = 0.1
+        self.course_length_coefficient = self.cfg.course_length_coefficient
+        self.course_width_coefficient = self.cfg.course_width_coefficient
+        self.position_tolerance = self.cfg.position_tolerance
+        self.goal_reached_bonus = self.cfg.goal_reached_bonus
+        self.position_progress_weight = self.cfg.position_progress_weight
+        self.heading_coefficient = self.cfg.heading_coefficient
+        self.heading_progress_weight = self.cfg.heading_progress_weight
         self._target_index = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.int32
         )
@@ -99,11 +60,15 @@ class NavEnv(DirectRLEnv):
         self._accumulated_laziness = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.float32
         )
-        self.laziness_decay = 0.95  # How much previous laziness carries over
-        self.laziness_threshold = 0.5  # Speed threshold for considering "lazy"
+        self.laziness_decay = (
+            self.cfg.laziness_decay
+        )  # How much previous laziness carries over
+        self.laziness_threshold = (
+            self.cfg.laziness_threshold
+        )  # Speed threshold for considering "lazy"
         self.max_laziness = (
-            10.0  # Cap on accumulated laziness to prevent extreme penalties
-        )
+            self.cfg.max_laziness
+        )  # Cap on accumulated laziness to prevent extreme penalties
 
     def _setup_scene(self):
         # Create a large ground plane without grid
@@ -135,8 +100,8 @@ class NavEnv(DirectRLEnv):
         # Import the necessary classes and NumPy
 
         # Define wall properties
-        wall_thickness = 2.0
-        wall_height = 3.0
+        wall_thickness = self.cfg.wall_thickness
+        wall_height = self.cfg.wall_height
         wall_position = self.room_size / 2
         self.wall_thickness = wall_thickness
 
@@ -219,10 +184,10 @@ class NavEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        throttle_scale = 10
-        throttle_max = 500
-        steering_scale = 0.1
-        steering_max = 3
+        throttle_scale = self.cfg.throttle_scale
+        throttle_max = self.cfg.throttle_max
+        steering_scale = self.cfg.steering_scale
+        steering_max = self.cfg.steering_max
 
         self._throttle_action = (
             actions[:, 0].repeat_interleave(4).reshape((-1, 4)) * throttle_scale

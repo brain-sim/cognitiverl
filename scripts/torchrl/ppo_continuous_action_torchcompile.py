@@ -18,12 +18,15 @@ from gymnasium import Wrapper
 from isaaclab.utils import configclass
 from tensordict import from_module
 from tensordict.nn import CudaGraphModule
-from torch.distributions.normal import Normal
-from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
 
 os.environ["TORCHDYNAMO_INLINE_INBUILT_NN_MODULES"] = "1"
 
 import os
+import sys
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from models import CNNAgent, MLPAgent
 
 
 @configclass
@@ -313,132 +316,6 @@ def set_high_precision():
     torch.set_float32_matmul_precision("high")
 
 
-class VisionAgent(nn.Module):
-    """
-    Convolutional agent using a pretrained MobileNetV3 backbone for image feature
-    extraction, followed by fully connected layers for policy and value estimation.
-    """
-
-    def __init__(self, envs):
-        super().__init__()
-
-        # Image input dimensions
-        channels, height, width = 3, 32, 32
-        self.img_size = (channels, height, width)
-
-        # Load and adapt MobileNetV3-small backbone
-        backbone = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.DEFAULT)
-        backbone.eval()  # freeze backbone in eval mode
-
-        # Adjust first conv layer for 32x32 inputs
-        backbone.features[0][0] = nn.Conv2d(
-            in_channels=channels,
-            out_channels=16,
-            kernel_size=3,
-            stride=2,
-            padding=1,
-            bias=False,
-        )
-        self.backbone = nn.Sequential(*backbone.features)
-
-        # Determine feature dimension
-        with torch.no_grad():
-            dummy = torch.zeros(1, channels, height, width)
-            feat_dim = self.backbone(dummy).view(1, -1).size(1)
-
-        # MLP for extracted features
-        self.feature_net = nn.Sequential(
-            layer_init(nn.Linear(feat_dim, 128)),
-            nn.ELU(),
-            layer_init(nn.Linear(128, 64)),
-            nn.ELU(),
-        )
-
-        # Critic head
-        self.critic = layer_init(nn.Linear(64, 1), std=1.0)
-
-        # Actor head (mean) and log std parameter
-        action_dim = int(np.prod(envs.action_space.shape[1:]))
-        self.actor_mean = layer_init(nn.Linear(64, action_dim), std=1.0)
-        self.actor_logstd = nn.Parameter(torch.zeros(1, action_dim))
-
-    def extract_image(self, x: torch.Tensor) -> torch.Tensor:
-        """Extract features from image portion of the state vector."""
-        bsz = x.size(0)
-        c, h, w = self.img_size
-        # reshape and forward through backbone
-        imgs = x[:, : c * h * w].view(bsz, c, h, w)
-        with torch.no_grad():
-            feats = self.backbone(imgs)
-        return feats.view(bsz, -1)
-
-    def get_value(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute state-value from raw input."""
-        img_feats = self.extract_image(x)
-        h = self.feature_net(img_feats)
-        return self.critic(h)
-
-    def get_action_and_value(
-        self, x: torch.Tensor, action: torch.Tensor = None
-    ) -> tuple:
-        """Compute action, log-prob, entropy, and value for input states."""
-        img_feats = self.extract_image(x)
-        h = self.feature_net(img_feats)
-
-        mean = self.actor_mean(h)
-        logstd = self.actor_logstd.expand_as(mean)
-        logstd = torch.clamp(logstd, -20, 2)
-        std = torch.exp(logstd)
-        dist = Normal(mean, std)
-
-        if action is None:
-            action = dist.rsample()
-
-        logprob = dist.log_prob(action).sum(dim=1)
-        entropy = dist.entropy().sum(dim=1)
-        value = self.critic(h).view(-1)
-
-        return action, logprob, entropy, value
-
-
-class Agent(nn.Module):
-    def __init__(self, n_obs, n_act):
-        super().__init__()
-        self.critic = nn.Sequential(
-            layer_init(nn.Linear(n_obs, 64)),
-            nn.ELU(),
-            layer_init(nn.Linear(64, 64)),
-            nn.ELU(),
-            layer_init(nn.Linear(64, 1), std=1.0),
-        )
-        self.actor_mean = nn.Sequential(
-            layer_init(nn.Linear(n_obs, 64)),
-            nn.ELU(),
-            layer_init(nn.Linear(64, 64)),
-            nn.ELU(),
-            layer_init(nn.Linear(64, n_act), std=1.0),
-        )
-        self.actor_logstd = nn.Parameter(torch.zeros(1, n_act))
-
-    def get_value(self, x):
-        return self.critic(x)
-
-    def get_action_and_value(self, obs, action=None):
-        action_mean = self.actor_mean(obs)
-        action_logstd = self.actor_logstd.expand_as(action_mean)
-        action_logstd = torch.clamp(action_logstd, -20, 2)
-        action_std = torch.exp(action_logstd)
-        probs = Normal(action_mean, action_std)
-        if action is None:
-            action = probs.sample()
-        return (
-            action,
-            probs.log_prob(action).sum(1),
-            probs.entropy().sum(1),
-            self.critic(obs),
-        )
-
-
 def main(args):
     def gae(next_obs, next_done, container):
         # bootstrap value if not done
@@ -608,9 +485,12 @@ def main(args):
         return next_obs, reward, done, info
 
     ####### Agent #######
-    agent = Agent(n_obs, n_act).to(device)
+    if args.agent_type == "CNNAgent":
+        agent = CNNAgent(envs).to(device)
+    else:
+        agent = MLPAgent(n_obs, n_act).to(device)
     # Make a version of agent with detached params
-    agent_inference = Agent(n_obs, n_act).to(device)
+    agent_inference = MLPAgent(n_obs, n_act).to(device)
     agent_inference_p = from_module(agent).data
     agent_inference_p.to_module(agent_inference)
 
@@ -632,8 +512,8 @@ def main(args):
 
     if args.compile:
         policy = torch.compile(policy)
-        gae = torch.compile(gae, fullgraph=True)
-        # gae = torch.compile(gae)
+        # gae = torch.compile(gae, fullgraph=True)
+        gae = torch.compile(gae)
         update = torch.compile(update)
 
     if args.cudagraphs:

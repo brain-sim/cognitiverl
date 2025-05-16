@@ -8,21 +8,20 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 
-import torch
-
 import isaaclab.sim as sim_utils
+import torch
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils.math import sample_uniform
 
-from .nav_env_cfg import NavEnvCfg
+from .nav_env_cfg import BaseNavEnvCfg
 
 
 class NavEnv(DirectRLEnv):
-    cfg: NavEnvCfg
+    cfg: BaseNavEnvCfg
 
-    def __init__(self, cfg: NavEnvCfg, render_mode: str | None = None, **kwargs):
+    def __init__(self, cfg: BaseNavEnvCfg, render_mode: str | None = None, **kwargs):
         super().__init__(cfg, render_mode, **kwargs)
 
         self._cart_dof_idx, _ = self.robot.find_joints(self.cfg.cart_dof_name)

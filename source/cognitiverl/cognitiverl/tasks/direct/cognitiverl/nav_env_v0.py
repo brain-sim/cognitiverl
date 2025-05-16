@@ -2,49 +2,14 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-import torch
-
 import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, ArticulationCfg
-from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
+import torch
+from isaaclab.assets import Articulation
+from isaaclab.envs import DirectRLEnv
 from isaaclab.markers import VisualizationMarkers
-from isaaclab.scene import InteractiveSceneCfg
-from isaaclab.sim import SimulationCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.utils import configclass
 
-from .nav import navigation_CFG
-from .waypoint import WAYPOINT_CFG
-
-
-@configclass
-class NavEnvCfg(DirectRLEnvCfg):
-    decimation = 4
-    episode_length_s = 20.0
-    action_space = 2
-    observation_space = 8
-    state_space = 0
-    sim: SimulationCfg = SimulationCfg(dt=1 / 60, render_interval=decimation)
-    robot_cfg: ArticulationCfg = navigation_CFG.replace(
-        prim_path="/World/envs/env_.*/Robot"
-    )
-    waypoint_cfg = WAYPOINT_CFG
-
-    throttle_dof_name = [
-        "Wheel__Knuckle__Front_Left",
-        "Wheel__Knuckle__Front_Right",
-        "Wheel__Upright__Rear_Right",
-        "Wheel__Upright__Rear_Left",
-    ]
-    steering_dof_name = [
-        "Knuckle__Upright__Front_Right",
-        "Knuckle__Upright__Front_Left",
-    ]
-
-    env_spacing = 32.0
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=4096, env_spacing=env_spacing, replicate_physics=True
-    )
+from .nav_env_cfg import NavEnvCfg
 
 
 class NavEnv(DirectRLEnv):
@@ -66,7 +31,7 @@ class NavEnv(DirectRLEnv):
         self.task_completed = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.bool
         )
-        self._num_goals = 10
+        self._num_goals = cfg.num_goals
         self._target_positions = torch.zeros(
             (self.num_envs, self._num_goals, 2), device=self.device, dtype=torch.float32
         )
@@ -74,13 +39,13 @@ class NavEnv(DirectRLEnv):
             (self.num_envs, self._num_goals, 3), device=self.device, dtype=torch.float32
         )
         self.env_spacing = self.cfg.env_spacing
-        self.course_length_coefficient = 2.5
-        self.course_width_coefficient = 2.0
-        self.position_tolerance = 0.15
-        self.goal_reached_bonus = 10.0
-        self.position_progress_weight = 1.0
-        self.heading_coefficient = 0.25
-        self.heading_progress_weight = 0.05
+        self.course_length_coefficient = self.cfg.course_length_coefficient
+        self.course_width_coefficient = self.cfg.course_width_coefficient
+        self.position_tolerance = self.cfg.position_tolerance
+        self.goal_reached_bonus = self.cfg.goal_reached_bonus
+        self.position_progress_weight = self.cfg.position_progress_weight
+        self.heading_coefficient = self.cfg.heading_coefficient
+        self.heading_progress_weight = self.cfg.heading_progress_weight
         self._target_index = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.int32
         )
@@ -116,10 +81,10 @@ class NavEnv(DirectRLEnv):
         light_cfg.func("/World/Light", light_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        throttle_scale = 10
-        throttle_max = 50
-        steering_scale = 0.1
-        steering_max = 0.75
+        throttle_scale = self.cfg.throttle_scale
+        throttle_max = self.cfg.throttle_max
+        steering_scale = self.cfg.steering_scale
+        steering_max = self.cfg.steering_max
 
         self._throttle_action = (
             actions[:, 0].repeat_interleave(4).reshape((-1, 4)) * throttle_scale

@@ -18,44 +18,7 @@ from isaaclab.utils import configclass, math
 from isaacsim.core.api.materials import PhysicsMaterial
 from isaacsim.core.api.objects import FixedCuboid
 
-from .nav import navigation_CFG
-from .waypoint import WAYPOINT_CFG
-
-
-@configclass
-class NavEnvCfg(DirectRLEnvCfg):
-    decimation = 4
-    episode_length_s = 30.0
-    action_space = 2
-    observation_space = {
-        "vector": 6,  # Changed from 9 to 6.
-        "image": [3, 32, 32],
-    }
-    state_space = 0
-    sim: SimulationCfg = SimulationCfg(dt=1 / 60, render_interval=decimation)
-    robot_cfg: ArticulationCfg = navigation_CFG.replace(
-        prim_path="/World/envs/env_.*/Robot",
-        spawn=navigation_CFG.spawn.replace(
-            scale=(0.03, 0.03, 0.03)
-        ),  # 3D vector for scaling
-    )
-    waypoint_cfg = WAYPOINT_CFG
-
-    throttle_dof_name = [
-        "Wheel__Knuckle__Front_Left",
-        "Wheel__Knuckle__Front_Right",
-        "Wheel__Upright__Rear_Right",
-        "Wheel__Upright__Rear_Left",
-    ]
-    steering_dof_name = [
-        "Knuckle__Upright__Front_Right",
-        "Knuckle__Upright__Front_Left",
-    ]
-
-    env_spacing = 40.0
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=4096, env_spacing=env_spacing, replicate_physics=True
-    )
+from .nav_env_cfg import NavEnvCfg
 
 
 class NavEnv(DirectRLEnv):
