@@ -285,6 +285,17 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     return layer
 
 
+def seed_everything(envs, seed):
+    random.seed(seed)
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = True
+    envs.seed(seed=seed)
+
+
 class VisionAgent(nn.Module):
     """
     Convolutional agent using a pretrained MobileNetV3 backbone for image feature
@@ -431,12 +442,6 @@ def main(args):
         save_code=True,
     )
 
-    # TRY NOT TO MODIFY: seeding
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.backends.cudnn.deterministic = args.torch_deterministic
-
     device = torch.device(args.device)
 
     # env setup
@@ -447,6 +452,8 @@ def main(args):
         args.disable_fabric,
         args.capture_video,
     )()
+    # TRY NOT TO MODIFY: seeding
+    seed_everything(envs, args.seed)
     assert isinstance(envs.action_space, gym.spaces.Box), (
         "only continuous action space is supported"
     )
@@ -468,9 +475,7 @@ def main(args):
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
-    # next_obs_buf, _ = envs.reset(seed=args.seed)
-    # next_obs = next_obs_buf["policy"]
-    envs.seed(seed=args.seed)
+
     next_obs, _ = envs.reset()
     next_done = torch.zeros(args.num_envs).to(device)
     max_ep_ret = -float("inf")
