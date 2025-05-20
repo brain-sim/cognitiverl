@@ -2,19 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
+import isaaclab.sim as sim_utils
 import numpy as np
 import torch
-
-import isaaclab.sim as sim_utils
-from isaaclab.assets import Articulation, ArticulationCfg
-from isaaclab.envs import DirectRLEnv, DirectRLEnvCfg
+from isaaclab.assets import Articulation
+from isaaclab.envs import DirectRLEnv
 from isaaclab.envs.common import VecEnvStepReturn
 from isaaclab.markers import VisualizationMarkers
-from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sensors.camera import TiledCamera, TiledCameraCfg
-from isaaclab.sim import SimulationCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
-from isaaclab.utils import configclass, math
+from isaaclab.utils import math
 from isaacsim.core.api.materials import PhysicsMaterial
 from isaacsim.core.api.objects import FixedCuboid
 
@@ -51,13 +48,13 @@ class NavEnv(DirectRLEnv):
             (self.num_envs, self._num_goals, 3), device=self.device, dtype=torch.float32
         )
         self.env_spacing = self.cfg.env_spacing
-        self.course_length_coefficient = 2.5
-        self.course_width_coefficient = 2.0
-        self.position_tolerance = 3.0
-        self.goal_reached_bonus = 20.0
-        self.position_progress_weight = 1.0
-        self.heading_coefficient = 0.25
-        self.heading_progress_weight = 0.1
+        self.course_length_coefficient = self.cfg.course_length_coefficient
+        self.course_width_coefficient = self.cfg.course_width_coefficient
+        self.position_tolerance = self.cfg.position_tolerance
+        self.goal_reached_bonus = self.cfg.goal_reached_bonus
+        self.position_progress_weight = self.cfg.position_progress_weight
+        self.heading_coefficient = self.cfg.heading_coefficient
+        self.heading_progress_weight = self.cfg.heading_progress_weight
         self._target_index = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.int32
         )
@@ -66,11 +63,15 @@ class NavEnv(DirectRLEnv):
         self._accumulated_laziness = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.float32
         )
-        self.laziness_decay = 0.95  # How much previous laziness carries over
-        self.laziness_threshold = 0.5  # Speed threshold for considering "lazy"
+        self.laziness_decay = (
+            self.cfg.laziness_decay
+        )  # How much previous laziness carries over
+        self.laziness_threshold = (
+            self.cfg.laziness_threshold
+        )  # Speed threshold for considering "lazy"
         self.max_laziness = (
-            10.0  # Cap on accumulated laziness to prevent extreme penalties
-        )
+            self.cfg.max_laziness
+        )  # Cap on accumulated laziness to prevent extreme penalties
 
     def _setup_scene(self):
         # Create a large ground plane without grid
@@ -103,8 +104,8 @@ class NavEnv(DirectRLEnv):
         import numpy as np
 
         # Define wall properties
-        wall_thickness = 2.0
-        wall_height = 3.0
+        wall_thickness = self.cfg.wall_thickness
+        wall_height = self.cfg.wall_height
         wall_position = self.room_size / 2
         self.wall_thickness = wall_thickness
 
@@ -199,10 +200,10 @@ class NavEnv(DirectRLEnv):
         self.camera = TiledCamera(camera_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        throttle_scale = 10.0
-        throttle_max = 500
-        steering_scale = 0.5
-        steering_max = 3
+        throttle_scale = self.cfg.throttle_scale
+        throttle_max = self.cfg.throttle_max
+        steering_scale = self.cfg.steering_scale
+        steering_max = self.cfg.steering_max
 
         self._throttle_action = (
             actions[:, 0].repeat_interleave(4).reshape((-1, 4)) * throttle_scale

@@ -16,7 +16,7 @@ import tqdm
 import wandb
 from gymnasium import Wrapper
 from isaaclab.utils import configclass
-from tensordict import from_module
+from tensordict import TensorDict, from_module
 from tensordict.nn import CudaGraphModule
 
 os.environ["TORCHDYNAMO_INLINE_INBUILT_NN_MODULES"] = "1"
@@ -317,31 +317,59 @@ def set_high_precision():
 
 
 def main(args):
-    def gae(next_obs, next_done, container):
-        # bootstrap value if not done
-        next_value = get_value(next_obs).reshape(-1)
-        lastgaelam = 0
-        nextnonterminals = container["dones"].float().unbind(0)
-        vals = container["vals"]
-        vals_unbind = vals.unbind(0)
-        rewards = container["rewards"].unbind(0)
+    # def gae(next_obs, next_done, container):
+    #     # bootstrap value if not done
+    #     next_value = get_value(next_obs).reshape(-1)
+    #     lastgaelam = 0
+    #     nextnonterminals = container["dones"].float().unbind(0)
+    #     vals = container["vals"]
+    #     vals_unbind = vals.unbind(0)
+    #     rewards = container["rewards"].unbind(0)
 
-        advantages = []
-        nextnonterminal = next_done.float()
-        nextvalues = next_value
-        for t in range(args.num_steps - 1, -1, -1):
-            cur_val = vals_unbind[t]
-            delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - cur_val
-            advantages.append(
-                delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+    #     advantages = []
+    #     nextnonterminal = next_done.float()
+    #     nextvalues = next_value
+    #     for t in range(args.num_steps - 1, -1, -1):
+    #         cur_val = vals_unbind[t]
+    #         delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - cur_val
+    #         advantages.append(
+    #             delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+    #         )
+    #         lastgaelam = advantages[-1]
+
+    #         nextnonterminal = nextnonterminals[t]
+    #         nextvalues = cur_val
+
+    #     advantages = container["advantages"] = torch.stack(list(reversed(advantages)))
+    #     container["returns"] = advantages + vals
+    #     return container
+
+    # 4) Fully tensorized GAE
+    def gae(next_val, next_done, container):
+        """
+        Fully tensorized GAE via reverse-cumsum, using correct (1 - done) masking.
+        Returns advantages and returns of shape [T, N].
+        """
+        rewards = container["rewards"]  # [T, N]
+        values = container["vals"]  # [T, N]
+        dones = container["dones"]  # [T, N]
+        # Bootstrap V_T from next_obs
+        with torch.no_grad():
+            next_val = get_value(next_obs).view(1, -1)
+        # Align next values for each timestep
+        next_vals = torch.cat([values[1:], next_val], dim=0)  # [T, N]
+
+        nonterm = 1.0 - torch.cat([dones[1:], next_done.view(1, -1)], dim=0)
+
+        # δ_t = r_t + γ·V_{t+1}·nonterm_t – V_t
+        deltas = rewards + args.gamma * next_vals * nonterm - values  # [T, N]
+        advantages = deltas.clone()
+        for t in range(args.num_steps - 2, -1, -1):
+            advantages[t] += (
+                args.gamma * args.gae_lambda * nonterm[t] * advantages[t + 1]
             )
-            lastgaelam = advantages[-1]
-
-            nextnonterminal = nextnonterminals[t]
-            nextvalues = cur_val
-
-        advantages = container["advantages"] = torch.stack(list(reversed(advantages)))
-        container["returns"] = advantages + vals
+        container.set_("advantages", advantages)
+        container.set_("returns", advantages + values)
         return container
 
     def rollout(obs, done, avg_returns=[]):
@@ -356,25 +384,20 @@ def main(args):
             if "episode" in infos:
                 avg_returns.extend(infos["episode"]["r"])
                 # desc = f"global_step={global_step}, episodic_return={torch.tensor(avg_returns).mean(): 4.2f} (max={max_ep_ret: 4.2f})"
+            td = fixed_td.clone()
+            td.set_("obs", obs)
+            td.set_("rewards", reward)
+            td.set_("dones", done.float())
+            td.set_("actions", action)
+            td.set_("logprobs", logprob)
+            td.set_("vals", value.squeeze(-1))
 
-            ts.append(
-                tensordict.TensorDict._new_unsafe(
-                    obs=obs,
-                    # cleanrl ppo examples associate the done with the previous obs (not the done resulting from action)
-                    dones=done,
-                    vals=value.flatten(),
-                    actions=action,
-                    logprobs=logprob,
-                    rewards=reward,
-                    batch_size=(args.num_envs,),
-                )
-            )
-
+            ts.append(td)
             obs = next_obs
             done = next_done
 
         container = torch.stack(ts, 0)
-        return next_obs, done, container
+        return next_obs, done.float(), container
 
     def update(obs, actions, logprobs, advantages, returns, vals):
         optimizer.zero_grad()
@@ -476,6 +499,20 @@ def main(args):
         "only continuous action space is supported"
     )
 
+    fixed_td = TensorDict(
+        {
+            "obs": torch.zeros(args.num_envs, n_obs, device=device),
+            "rewards": torch.zeros(args.num_envs, device=device, dtype=torch.float32),
+            "vals": torch.zeros(args.num_envs, device=device, dtype=torch.float32),
+            "dones": torch.zeros(args.num_envs, device=device, dtype=torch.float32),
+            "actions": torch.zeros(args.num_envs, n_act, device=device),
+            "logprobs": torch.zeros(args.num_envs, device=device),
+            "advantages": torch.zeros(args.num_envs, device=device),
+            "returns": torch.zeros(args.num_envs, device=device),
+        },
+        batch_size=[args.num_envs],
+    )
+
     # Register step as a special op not to graph break
     # @torch.library.custom_op("mylib::step", mutates_args=())
     def step_func(
@@ -491,6 +528,7 @@ def main(args):
         agent = MLPAgent(n_obs, n_act).to(device)
     # Make a version of agent with detached params
     agent_inference = MLPAgent(n_obs, n_act).to(device)
+    agent_inference.eval()
     agent_inference_p = from_module(agent).data
     agent_inference_p.to_module(agent_inference)
 
@@ -512,13 +550,12 @@ def main(args):
 
     if args.compile:
         policy = torch.compile(policy)
-        # gae = torch.compile(gae, fullgraph=True)
-        gae = torch.compile(gae)
+        gae = torch.compile(gae, fullgraph=True)
         update = torch.compile(update)
 
     if args.cudagraphs:
         policy = CudaGraphModule(policy)
-        # gae = CudaGraphModule(gae)
+        gae = CudaGraphModule(gae)
         update = CudaGraphModule(update)
 
     # TRY NOT TO MODIFY: start the game
@@ -531,6 +568,7 @@ def main(args):
     pbar = tqdm.tqdm(range(1, args.num_iterations + 1))
     global_step_burnin = None
     start_time = None
+    max_ep_ret = -float("inf")
 
     for iteration in pbar:
         if iteration == args.measure_burnin:
@@ -548,7 +586,6 @@ def main(args):
             next_obs, next_done, avg_returns=avg_returns
         )
         global_step += container.numel()
-
         container = gae(next_obs, next_done, container)
         container_flat = container.view(-1)
 
@@ -572,6 +609,7 @@ def main(args):
             speed = (global_step - global_step_burnin) / (time.time() - start_time)
             r = container["rewards"].mean()
             r_max = container["rewards"].max()
+            max_ep_ret = max(max_ep_ret, r_max)
             avg_returns_t = torch.tensor(avg_returns).mean()
 
             with torch.no_grad():
@@ -589,8 +627,8 @@ def main(args):
                 f"speed: {speed: 4.1f} sps, "
                 f"reward avg: {r:4.2f}, "
                 f"reward max: {r_max:4.2f}, "
-                f"returns: {avg_returns_t: 4.2f},"
-                f"lr: {lr: 4.2f}"
+                f"returns: {avg_returns_t: 4.2f}, "
+                f"ep_r_max: {max_ep_ret: 4.2f}"
             )
             wandb.log(
                 {
@@ -599,6 +637,7 @@ def main(args):
                     "r": r,
                     "r_max": r_max,
                     "lr": lr,
+                    "ep_r_max": max_ep_ret,
                     **logs,
                 },
                 step=global_step,
