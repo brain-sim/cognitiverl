@@ -546,7 +546,6 @@ def main(args):
 
 if __name__ == "__main__":
     try:
-        os.environ["WANDB_MODE"] = "dryrun"
         main(args)
     except Exception as e:
         print("Exception:", e)
