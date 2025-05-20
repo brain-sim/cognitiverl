@@ -5,7 +5,6 @@ import sys
 import time
 from collections import deque
 from dataclasses import asdict
-from typing import Any, Deque, Tuple, Union
 
 import gymnasium as gym
 import numpy as np
@@ -16,7 +15,6 @@ import tqdm
 import wandb
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from gymnasium import Wrapper
 from isaaclab.utils import configclass
 from models import CNNAgent, MLPAgent
 
@@ -134,107 +132,107 @@ try:
 except ImportError:
     raise ImportError("Isaac Lab is not installed. Please install it first.")
 
-from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
+# from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
 
 
-class IsaacLabRecordEpisodeStatistics(Wrapper):
-    """
-    Gymnasium-style wrapper for DirectRLEnv or ManagerBasedRLEnv that:
-      - Tracks per-env returns & lengths as torch.Tensors,
-      - Inserts 'episode' stats when each sub-env finishes,
-      - Maintains deque histories of recent returns/lengths.
-    """
+# class IsaacLabRecordEpisodeStatistics(Wrapper):
+#     """
+#     Gymnasium-style wrapper for DirectRLEnv or ManagerBasedRLEnv that:
+#       - Tracks per-env returns & lengths as torch.Tensors,
+#       - Inserts 'episode' stats when each sub-env finishes,
+#       - Maintains deque histories of recent returns/lengths.
+#     """
 
-    def __init__(
-        self,
-        env: Union[DirectRLEnv, ManagerBasedRLEnv],
-        deque_size: int = 100,
-    ):
-        super().__init__(env)
-        # Unwrap through any gym.Wrapper layers to find the true vector env
-        self.num_envs = env.unwrapped.num_envs
-        self.device = env.unwrapped.device
+#     def __init__(
+#         self,
+#         env: Union[DirectRLEnv, ManagerBasedRLEnv],
+#         deque_size: int = 100,
+#     ):
+#         super().__init__(env)
+#         # Unwrap through any gym.Wrapper layers to find the true vector env
+#         self.num_envs = env.unwrapped.num_envs
+#         self.device = env.unwrapped.device
 
-        # Tensor-based counters (on CPU)
-        self._returns = torch.zeros(
-            self.num_envs, dtype=torch.float32, device=self.device
-        )
-        self._lengths = torch.zeros(
-            self.num_envs, dtype=torch.int64, device=self.device
-        )
-        # Track start times in a tensor for easy vector math
-        now = time.time()
-        self._start_times = torch.full(
-            (self.num_envs,), now, dtype=torch.float64, device=self.device
-        )
+#         # Tensor-based counters (on CPU)
+#         self._returns = torch.zeros(
+#             self.num_envs, dtype=torch.float32, device=self.device
+#         )
+#         self._lengths = torch.zeros(
+#             self.num_envs, dtype=torch.int64, device=self.device
+#         )
+#         # Track start times in a tensor for easy vector math
+#         now = time.time()
+#         self._start_times = torch.full(
+#             (self.num_envs,), now, dtype=torch.float64, device=self.device
+#         )
 
-        # History buffers
-        self.return_queue: Deque[float] = deque(maxlen=deque_size)
-        self.length_queue: Deque[int] = deque(maxlen=deque_size)
+#         # History buffers
+#         self.return_queue: Deque[float] = deque(maxlen=deque_size)
+#         self.length_queue: Deque[int] = deque(maxlen=deque_size)
 
-    def reset(self, **kwargs) -> Tuple[Any, dict]:
-        """Reset all sub-envs and zero out stats."""
-        obs, info = self.env.reset(**kwargs)
-        now = time.time()
-        self._returns.zero_()
-        self._lengths.zero_()
-        self._start_times.fill_(now)
-        return obs, info
+#     def reset(self, **kwargs) -> Tuple[Any, dict]:
+#         """Reset all sub-envs and zero out stats."""
+#         obs, info = self.env.reset(**kwargs)
+#         now = time.time()
+#         self._returns.zero_()
+#         self._lengths.zero_()
+#         self._start_times.fill_(now)
+#         return obs, info
 
-    def step(self, actions: Any) -> Tuple[Any, Any, Any, Any, dict]:
-        """
-        Step all sub‐envs, update tensorized stats, and emit a list of episode
-        dicts (one per env that just finished) under infos["episode"].
-        """
-        # 1) run the underlying env step
-        obs, rewards, terminated, truncated, infos = self.env.step(actions)
+#     def step(self, actions: Any) -> Tuple[Any, Any, Any, Any, dict]:
+#         """
+#         Step all sub‐envs, update tensorized stats, and emit a list of episode
+#         dicts (one per env that just finished) under infos["episode"].
+#         """
+#         # 1) run the underlying env step
+#         obs, rewards, terminated, truncated, infos = self.env.step(actions)
 
-        # 2) build a boolean mask of which envs just finished
-        dones = (terminated | truncated).to(self.device)
+#         # 2) build a boolean mask of which envs just finished
+#         dones = (terminated | truncated).to(self.device)
 
-        # 3) ensure rewards lives on the same device
-        if not torch.is_tensor(rewards):
-            rewards = torch.as_tensor(rewards, dtype=torch.float32, device=self.device)
+#         # 3) ensure rewards lives on the same device
+#         if not torch.is_tensor(rewards):
+#             rewards = torch.as_tensor(rewards, dtype=torch.float32, device=self.device)
 
-        # 4) vectorized accumulation of returns and lengths
-        self._returns += rewards
-        self._lengths += 1
+#         # 4) vectorized accumulation of returns and lengths
+#         self._returns += rewards
+#         self._lengths += 1
 
-        # 5) if any envs finished, gather their stats
-        done_idx = torch.nonzero(dones, as_tuple=True)[0]
-        if done_idx.numel() > 0:
-            # capture the current time as a tensor
-            now_t = torch.tensor(
-                time.time(), device=self.device, dtype=self._start_times.dtype
-            )
-            # slice out the returns, lengths, and elapsed times for finished envs
-            returns_d = self._returns[done_idx]
-            lengths_d = self._lengths[done_idx]
-            times_d = now_t - self._start_times[done_idx]
+#         # 5) if any envs finished, gather their stats
+#         done_idx = torch.nonzero(dones, as_tuple=True)[0]
+#         if done_idx.numel() > 0:
+#             # capture the current time as a tensor
+#             now_t = torch.tensor(
+#                 time.time(), device=self.device, dtype=self._start_times.dtype
+#             )
+#             # slice out the returns, lengths, and elapsed times for finished envs
+#             returns_d = self._returns[done_idx]
+#             lengths_d = self._lengths[done_idx]
+#             times_d = now_t - self._start_times[done_idx]
 
-            # convert those tensors once into Python lists
-            r_list = returns_d.tolist()
-            l_list = lengths_d.tolist()
-            t_list = times_d.tolist()
+#             # convert those tensors once into Python lists
+#             r_list = returns_d.tolist()
+#             l_list = lengths_d.tolist()
+#             t_list = times_d.tolist()
 
-            # build the list of episode‐stats dicts
-            infos.setdefault("episode", {})
-            infos["episode"]["r"] = r_list
-            infos["episode"]["l"] = l_list
-            infos["episode"]["t"] = t_list
+#             # build the list of episode‐stats dicts
+#             infos.setdefault("episode", {})
+#             infos["episode"]["r"] = r_list
+#             infos["episode"]["l"] = l_list
+#             infos["episode"]["t"] = t_list
 
-            # append to history deques
-            self.return_queue.extend(r_list)
-            self.length_queue.extend(l_list)
+#             # append to history deques
+#             self.return_queue.extend(r_list)
+#             self.length_queue.extend(l_list)
 
-            # reset counters for the finished envs
-            mask = dones
-            self._returns[mask] = 0.0
-            self._lengths[mask] = 0
-            self._start_times[mask] = now_t
+#             # reset counters for the finished envs
+#             mask = dones
+#             self._returns[mask] = 0.0
+#             self._lengths[mask] = 0
+#             self._start_times[mask] = now_t
 
-        # 6) return exactly the same API as Gym’s vector wrapper
-        return obs, rewards, terminated, truncated, infos
+#         # 6) return exactly the same API as Gym’s vector wrapper
+#         return obs, rewards, terminated, truncated, infos
 
 
 def make_env(env_id, idx, capture_video, run_name, gamma):
@@ -261,6 +259,7 @@ def make_env(env_id, idx, capture_video, run_name, gamma):
 def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **args):
     import isaaclab_tasks  # noqa: F401
     from isaaclab_rl.rsl_rl.vecenv_wrapper import RslRlVecEnvWrapper
+    from isaaclab_rl.torchrl import IsaacLabRecordEpisodeStatistics
     from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
     import cognitiverl.tasks  # noqa: F401
