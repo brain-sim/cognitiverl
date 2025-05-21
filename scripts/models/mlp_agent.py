@@ -5,7 +5,7 @@ from torch.distributions.normal import Normal
 from .utils import layer_init
 
 
-class MLPAgent(nn.Module):
+class MLPPPOAgent(nn.Module):
     def __init__(self, n_obs, n_act):
         super().__init__()
         self.critic = nn.Sequential(

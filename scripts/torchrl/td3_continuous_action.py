@@ -1,9 +1,9 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/td3/#td3_continuous_actionpy
 import os
-import random
+import sys
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import asdict
 
 import gymnasium as gym
 import numpy as np
@@ -12,32 +12,61 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import tqdm
-import tyro
 import wandb
-from stable_baselines3.common.buffers import ReplayBuffer
+from isaaclab.utils import configclass
+from torchrl.data import LazyTensorStorage, ReplayBuffer
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tensordict import TensorDict
+from utils import seed_everything
+
+### TODO : Buffer Memory issue when directly loading into GPU.
+### Possible solution 1 : Load into CPU and then transfer to GPU.
+### Possible solution 2 : Use a lesser buffer memory size.
 
 
-@dataclass
-class Args:
-    exp_name: str = os.path.basename(__file__)[: -len(".py")]
-    """the name of this experiment"""
+@configclass
+class EnvArgs:
+    task: str = "CognitiveRL-Nav-v2"
+    """the id of the environment"""
+    env_cfg_entry_point: str = "env_cfg_entry_point"
+    """the entry point of the environment configuration"""
+    num_envs: int = 64
+    """the number of parallel environments to simulate"""
     seed: int = 1
-    """seed of the experiment"""
-    torch_deterministic: bool = True
-    """if toggled, `torch.backends.cudnn.deterministic=False`"""
-    cuda: bool = True
-    """if toggled, cuda will be enabled by default"""
+    """seed of the environment"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
+    video: bool = False
+    """record videos during training"""
+    video_length: int = 200
+    """length of the recorded video (in steps)"""
+    video_interval: int = 2000
+    """interval between video recordings (in steps)"""
+    disable_fabric: bool = False
+    """disable fabric and use USD I/O operations"""
+    distributed: bool = False
+    """run training with multiple GPUs or nodes"""
+    headless: bool = True
+    """run training in headless mode"""
+    enable_cameras: bool = True
+    """enable cameras to record sensor inputs."""
 
-    # Algorithm specific arguments
-    env_id: str = "HalfCheetah-v4"
-    """the id of the environment"""
+
+@configclass
+class ExperimentArgs:
+    exp_name: str = os.path.basename(__file__)[: -len(".py")]
+    """the name of this experiment"""
+    torch_deterministic: bool = True
+    """if toggled, `torch.backends.cudnn.deterministic=False`"""
+    device: str = "cuda:0"
+    """cuda:0 will be enabled by default"""
+
     total_timesteps: int = 1000000
     """total timesteps of the experiments"""
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
-    buffer_size: int = int(1e6)
+    buffer_size: int = int(1e5)
     """the replay memory buffer size"""
     gamma: float = 0.99
     """the discount factor gamma"""
@@ -58,14 +87,51 @@ class Args:
 
     measure_burnin: int = 3
 
+    # Agent config
+    agent_type: str = "CNNTD3Agent"
 
-def make_env(env_id, seed, idx, capture_video, run_name):
+
+@configclass
+class Args(ExperimentArgs, EnvArgs):
+    pass
+
+
+@configclass
+class Args(ExperimentArgs, EnvArgs):
+    pass
+
+
+def launch_app(args):
+    from argparse import Namespace
+
+    app_launcher = AppLauncher(Namespace(**asdict(args)))
+    return app_launcher.app
+
+
+def get_args():
+    exp_args = ExperimentArgs()
+    env_args = EnvArgs()
+    merged_args = {**asdict(exp_args), **asdict(env_args)}
+    args = Args(**merged_args)
+    return args
+
+
+try:
+    from isaaclab.app import AppLauncher
+
+    args = get_args()
+    simulation_app = launch_app(args)
+except ImportError:
+    raise ImportError("Isaac Lab is not installed. Please install it first.")
+
+
+def make_env(task, seed, idx, capture_video, run_name):
     def thunk():
         if capture_video and idx == 0:
-            env = gym.make(env_id, render_mode="rgb_array")
+            env = gym.make(task, render_mode="rgb_array")
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
         else:
-            env = gym.make(env_id)
+            env = gym.make(task)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.action_space.seed(seed)
         return env
@@ -73,13 +139,36 @@ def make_env(env_id, seed, idx, capture_video, run_name):
     return thunk
 
 
+def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **args):
+    import isaaclab_tasks  # noqa: F401
+    from isaaclab_rl.rsl_rl.vecenv_wrapper import RslRlVecEnvWrapper
+    from isaaclab_rl.torchrl import IsaacLabRecordEpisodeStatistics
+    from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+
+    import cognitiverl.tasks  # noqa: F401
+
+    def thunk():
+        cfg = parse_env_cfg(
+            task, device, num_envs=num_envs, use_fabric=not disable_fabric
+        )
+        env = gym.make(
+            task,
+            cfg=cfg,
+            render_mode="rgb_array" if capture_video else None,
+        )
+        env = IsaacLabRecordEpisodeStatistics(env)
+        env = RslRlVecEnvWrapper(env, clip_actions=1.0)
+        return env
+
+    return thunk
+
+
 # ALGO LOGIC: initialize agent here:
 class QNetwork(nn.Module):
-    def __init__(self, env):
+    def __init__(self, n_obs, n_act):
         super().__init__()
         self.fc1 = nn.Linear(
-            np.array(env.single_observation_space.shape).prod()
-            + np.prod(env.single_action_space.shape),
+            n_obs + n_act,
             256,
         )
         self.fc2 = nn.Linear(256, 256)
@@ -94,23 +183,23 @@ class QNetwork(nn.Module):
 
 
 class Actor(nn.Module):
-    def __init__(self, env):
+    def __init__(self, n_obs, n_act, max_action, min_action):
         super().__init__()
-        self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), 256)
+        self.fc1 = nn.Linear(n_obs, 256)
         self.fc2 = nn.Linear(256, 256)
-        self.fc_mu = nn.Linear(256, np.prod(env.single_action_space.shape))
+        self.fc_mu = nn.Linear(256, n_act)
         # action rescaling
         self.register_buffer(
             "action_scale",
             torch.tensor(
-                (env.action_space.high - env.action_space.low) / 2.0,
+                (max_action - min_action) / 2.0,
                 dtype=torch.float32,
             ),
         )
         self.register_buffer(
             "action_bias",
             torch.tensor(
-                (env.action_space.high + env.action_space.low) / 2.0,
+                (max_action + min_action) / 2.0,
                 dtype=torch.float32,
             ),
         )
@@ -122,18 +211,18 @@ class Actor(nn.Module):
         return x * self.action_scale + self.action_bias
 
 
-if __name__ == "__main__":
-    import stable_baselines3 as sb3
+def main(args):
+    def extend_and_sample(transition):
+        rb.extend(transition)
+        return rb.sample(args.batch_size)
 
-    if sb3.__version__ < "2.0":
-        raise ValueError(
-            """Ongoing migration: run the following command to install the new dependencies:
-poetry run pip install "stable_baselines3==2.0.0a1"
-"""
-        )
+    def extend(transition):
+        rb.extend(transition)
 
-    args = tyro.cli(Args)
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}"
+    def sample():
+        return rb.sample(args.batch_size)
+
+    run_name = f"{args.task}__{args.exp_name}__{args.seed}"
 
     wandb.init(
         project="td3_continuous_action",
@@ -142,28 +231,31 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         save_code=True,
     )
 
-    # TRY NOT TO MODIFY: seeding
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.backends.cudnn.deterministic = args.torch_deterministic
-
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = (
+        torch.device(args.device) if torch.cuda.is_available() else torch.device("cpu")
+    )
 
     # env setup
-    envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.seed, 0, args.capture_video, run_name)]
-    )
-    assert isinstance(envs.single_action_space, gym.spaces.Box), (
+    envs = make_isaaclab_env(
+        args.task, args.device, args.num_envs, args.disable_fabric, args.capture_video
+    )()
+    # TRY NOT TO MODIFY: seeding
+    seed_everything(envs, args.seed)
+    n_obs = int(np.prod(envs.observation_space.shape[1:]))
+    n_act = int(np.prod(envs.action_space.shape[1:]))
+    assert isinstance(envs.action_space, gym.spaces.Box), (
         "only continuous action space is supported"
     )
 
-    actor = Actor(envs).to(device)
-    qf1 = QNetwork(envs).to(device)
-    qf2 = QNetwork(envs).to(device)
-    qf1_target = QNetwork(envs).to(device)
-    qf2_target = QNetwork(envs).to(device)
-    target_actor = Actor(envs).to(device)
+    max_action = float(envs.action_space.high[0].max())
+    min_action = float(envs.action_space.low[0].min())
+
+    actor = Actor(n_obs, n_act, max_action, min_action).to(device)
+    qf1 = QNetwork(n_obs, n_act).to(device)
+    qf2 = QNetwork(n_obs, n_act).to(device)
+    qf1_target = QNetwork(n_obs, n_act).to(device)
+    qf2_target = QNetwork(n_obs, n_act).to(device)
+    target_actor = Actor(n_obs, n_act, max_action, min_action).to(device)
     target_actor.load_state_dict(actor.state_dict())
     qf1_target.load_state_dict(qf1.state_dict())
     qf2_target.load_state_dict(qf2.state_dict())
@@ -172,18 +264,11 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     )
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.learning_rate)
 
-    envs.single_observation_space.dtype = np.float32
-    rb = ReplayBuffer(
-        args.buffer_size,
-        envs.single_observation_space,
-        envs.single_action_space,
-        device,
-        handle_timeout_termination=False,
-    )
+    rb = ReplayBuffer(storage=LazyTensorStorage(args.buffer_size, device=device))
     start_time = time.time()
 
     # TRY NOT TO MODIFY: start the game
-    obs, _ = envs.reset(seed=args.seed)
+    obs, _ = envs.reset()
     pbar = tqdm.tqdm(range(args.total_timesteps))
     start_time = None
     max_ep_ret = -float("inf")
@@ -196,43 +281,41 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
         # ALGO LOGIC: put action logic here
         if global_step < args.learning_starts:
-            actions = np.array(
-                [envs.single_action_space.sample() for _ in range(envs.num_envs)]
-            )
+            actions = torch.from_numpy(envs.action_space.sample()).float().to(device)
         else:
             with torch.no_grad():
                 actions = actor(torch.Tensor(obs).to(device))
                 actions += torch.normal(0, actor.action_scale * args.exploration_noise)
-                actions = (
-                    actions.cpu()
-                    .numpy()
-                    .clip(envs.single_action_space.low, envs.single_action_space.high)
-                )
+                actions = actions.clamp(min_action, max_action)
 
         # TRY NOT TO MODIFY: execute the game and log data.
-        next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+        next_obs, rewards, dones, infos = envs.step(actions)
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
-        if "final_info" in infos:
-            for info in infos["final_info"]:
-                r = float(info["episode"]["r"])
+        if "episode" in infos:
+            for r in infos["episode"]["r"]:
                 max_ep_ret = max(max_ep_ret, r)
                 avg_returns.append(r)
             desc = f"global_step={global_step}, episodic_return={torch.tensor(avg_returns).mean(): 4.2f} (max={max_ep_ret: 4.2f})"
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
-        real_next_obs = next_obs.copy()
-        for idx, trunc in enumerate(truncations):
-            if trunc:
-                real_next_obs[idx] = infos["final_observation"][idx]
-        rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
-
+        real_next_obs = next_obs.clone()
+        transition = TensorDict(
+            observations=obs,
+            next_observations=real_next_obs,
+            actions=actions,
+            rewards=rewards,
+            terminations=infos["terminations"],
+            dones=dones,
+            batch_size=obs.shape[0],
+            device=device,
+        )
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
 
+        data = extend_and_sample(transition)
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
-            data = rb.sample(args.batch_size)
             with torch.no_grad():
                 clipped_noise = (
                     torch.randn_like(data.actions, device=device) * args.policy_noise
@@ -240,9 +323,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
                 next_state_actions = (
                     target_actor(data.next_observations) + clipped_noise
-                ).clamp(
-                    envs.single_action_space.low[0], envs.single_action_space.high[0]
-                )
+                ).clamp(min_action, max_action)
                 qf1_next_target = qf1_target(data.next_observations, next_state_actions)
                 qf2_next_target = qf2_target(data.next_observations, next_state_actions)
                 min_qf_next_target = torch.min(qf1_next_target, qf2_next_target)
@@ -305,3 +386,13 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 )
 
     envs.close()
+
+
+if __name__ == "__main__":
+    try:
+        os.environ["WANDB_MODE"] = "disabled"
+        main(get_args())
+    except Exception as e:
+        print("Exception:", e)
+    finally:
+        simulation_app.close()

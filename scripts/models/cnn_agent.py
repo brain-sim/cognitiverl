@@ -7,7 +7,7 @@ from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
 from .utils import layer_init
 
 
-class CNNAgent(nn.Module):
+class CNNPPOAgent(nn.Module):
     """
     Convolutional agent using a pretrained MobileNetV3 backbone for image feature
     extraction, followed by fully connected layers for policy and value estimation.

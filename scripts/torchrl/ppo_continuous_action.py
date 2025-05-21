@@ -1,6 +1,5 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppo_continuous_actionpy
 import os
-import random
 import sys
 import time
 from collections import deque
@@ -16,7 +15,8 @@ import wandb
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from isaaclab.utils import configclass
-from models import CNNAgent, MLPAgent
+from models import CNNPPOAgent, MLPPPOAgent
+from utils import seed_everything
 
 
 @configclass
@@ -101,7 +101,7 @@ class ExperimentArgs:
     measure_burnin: int = 3
 
     # Agent config
-    agent_type: str = "CNNAgent"
+    agent_type: str = "CNNPPOAgent"
 
 
 @configclass
@@ -178,17 +178,6 @@ def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **a
     return thunk
 
 
-def seed_everything(envs, seed):
-    random.seed(seed)
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = True
-    envs.seed(seed=seed)
-
-
 def main(args):
     run_name = f"{args.task}__{args.exp_name}__{args.seed}"
 
@@ -203,7 +192,9 @@ def main(args):
         save_code=True,
     )
 
-    device = torch.device(args.device)
+    device = (
+        torch.device(args.device) if torch.cuda.is_available() else torch.device("cpu")
+    )
 
     # env setup
     envs = make_isaaclab_env(
@@ -219,10 +210,10 @@ def main(args):
         "only continuous action space is supported"
     )
 
-    if args.agent_type == "CNNAgent":
-        agent = CNNAgent(envs).to(device)
+    if args.agent_type == "CNNPPOAgent":
+        agent = CNNPPOAgent(envs).to(device)
     else:
-        agent = MLPAgent(envs).to(device)
+        agent = MLPPPOAgent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
@@ -384,6 +375,7 @@ def main(args):
                     "advantages": advantages.mean(),
                     "returns": returns.mean(),
                     "values": values.mean(),
+                    "returns_max": max_ep_ret,
                     "gn": gn,
                 }
             wandb.log(

@@ -1,6 +1,5 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppo_continuous_actionpy
 import os
-import random
 import time
 from collections import deque
 from dataclasses import asdict
@@ -25,7 +24,8 @@ import sys
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models import CNNAgent, MLPAgent
+from models import CNNPPOAgent, MLPPPOAgent
+from utils import seed_everything, set_high_precision
 
 
 @configclass
@@ -110,7 +110,7 @@ class ExperimentArgs:
     measure_burnin: int = 3
 
     # Agent config
-    agent_type: str = "Agent"
+    agent_type: str = "MLPPPOAgent"
 
     compile: bool = True
     """whether to use torch.compile."""
@@ -197,21 +197,6 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
-
-
-def seed_everything(envs, seed):
-    random.seed(seed)
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = True
-    envs.seed(seed=seed)
-
-
-def set_high_precision():
-    torch.set_float32_matmul_precision("high")
 
 
 def main(args):
@@ -378,7 +363,9 @@ def main(args):
         save_code=True,
     )
 
-    device = torch.device(args.device)
+    device = (
+        torch.device(args.device) if torch.cuda.is_available() else torch.device("cpu")
+    )
 
     # env setup
     envs = make_isaaclab_env(
@@ -420,12 +407,13 @@ def main(args):
         return next_obs, reward, done, info
 
     ####### Agent #######
-    if args.agent_type == "CNNAgent":
-        agent = CNNAgent(envs).to(device)
+    if args.agent_type == "CNNPPOAgent":
+        agent = CNNPPOAgent(n_obs, n_act).to(device)
+        agent_inference = CNNPPOAgent(n_obs, n_act).to(device)
     else:
-        agent = MLPAgent(n_obs, n_act).to(device)
+        agent = MLPPPOAgent(n_obs, n_act).to(device)
+        agent_inference = MLPPPOAgent(n_obs, n_act).to(device)
     # Make a version of agent with detached params
-    agent_inference = MLPAgent(n_obs, n_act).to(device)
     agent_inference.eval()
     agent_inference_p = from_module(agent).data
     agent_inference_p.to_module(agent_inference)
