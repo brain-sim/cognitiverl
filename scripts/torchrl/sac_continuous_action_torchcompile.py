@@ -25,10 +25,7 @@ from torchrl.data import LazyTensorStorage, ReplayBuffer
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import seed_everything
 
-### TODO 1 : Buffer Memory issue when directly loading into GPU.
-### Possible solution 1 : Load into CPU and then transfer to GPU.
-### Possible solution 2 : Use a lesser buffer memory size.
-### TODO 2 : Batch size (global) and transition batch size should be different.
+### TODO : Batch size (global) and transition batch size should be different.
 ### The current code only works if they are both the same.
 
 
@@ -76,9 +73,9 @@ class ExperimentArgs:
     # Algorithm specific arguments
     env_id: str = "HalfCheetah-v4"
     """the environment id of the task"""
-    total_timesteps: int = 1000000
+    total_timesteps: int = 1_000_000
     """total timesteps of the experiments"""
-    buffer_size: int = int(1e5)
+    buffer_size: int = 1_000_000
     """the replay memory buffer size"""
     gamma: float = 0.99
     """the discount factor gamma"""
@@ -86,7 +83,7 @@ class ExperimentArgs:
     """target smoothing coefficient (default: 0.005)"""
     batch_size: int = 64
     """the batch size of sample from the reply memory"""
-    learning_starts: int = 10
+    learning_starts: int = 1e3
     """timestep to start learning"""
     policy_lr: float = 3e-4
     """the learning rate of the policy network optimizer"""
@@ -332,7 +329,9 @@ def main(args):
     else:
         alpha = torch.as_tensor(args.alpha, device=device)
 
-    rb = ReplayBuffer(storage=LazyTensorStorage(args.buffer_size, device=device))
+    rb = ReplayBuffer(
+        storage=LazyTensorStorage(args.buffer_size, device=torch.device("cpu"))
+    )
 
     def batched_qf(params, obs, action, next_q_value=None):
         with params.to_module(qnet):
@@ -450,7 +449,7 @@ def main(args):
             terminations=infos["terminations"],
             dones=dones,
             batch_size=obs.shape[0],
-            device=device,
+            device=torch.device("cpu"),
         )
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
@@ -459,6 +458,7 @@ def main(args):
 
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
+            data = data.to(device)
             out_main = update_main(data)
             if global_step % args.policy_frequency == 0:  # TD 3 Delayed update support
                 for _ in range(

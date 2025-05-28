@@ -20,10 +20,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tensordict import TensorDict
 from utils import seed_everything
 
-### TODO : Buffer Memory issue when directly loading into GPU.
-### Possible solution 1 : Load into CPU and then transfer to GPU.
-### Possible solution 2 : Use a lesser buffer memory size.
-
 
 @configclass
 class EnvArgs:
@@ -62,11 +58,11 @@ class ExperimentArgs:
     device: str = "cuda:0"
     """cuda:0 will be enabled by default"""
 
-    total_timesteps: int = 1000000
+    total_timesteps: int = 1_000_000
     """total timesteps of the experiments"""
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
-    buffer_size: int = int(1e5)
+    buffer_size: int = 1_000_000
     """the replay memory buffer size"""
     gamma: float = 0.99
     """the discount factor gamma"""
@@ -78,7 +74,7 @@ class ExperimentArgs:
     """the scale of policy noise"""
     exploration_noise: float = 0.1
     """the scale of exploration noise"""
-    learning_starts: int = 25e3
+    learning_starts: int = 10
     """timestep to start learning"""
     policy_frequency: int = 2
     """the frequency of training policy (delayed)"""
@@ -259,7 +255,9 @@ def main(args):
     )
     actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.learning_rate)
 
-    rb = ReplayBuffer(storage=LazyTensorStorage(args.buffer_size, device=device))
+    rb = ReplayBuffer(
+        storage=LazyTensorStorage(args.buffer_size, device=torch.device("cpu"))
+    )
     start_time = time.time()
 
     # TRY NOT TO MODIFY: start the game
@@ -303,7 +301,7 @@ def main(args):
             terminations=infos["terminations"],
             dones=dones,
             batch_size=obs.shape[0],
-            device=device,
+            device=torch.device("cpu"),
         )
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
@@ -311,23 +309,28 @@ def main(args):
         data = extend_and_sample(transition)
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
+            data = data.to(device)
             with torch.no_grad():
                 clipped_noise = (
-                    torch.randn_like(data.actions, device=device) * args.policy_noise
+                    torch.randn_like(data["actions"], device=device) * args.policy_noise
                 ).clamp(-args.noise_clip, args.noise_clip) * target_actor.action_scale
 
                 next_state_actions = (
-                    target_actor(data.next_observations) + clipped_noise
+                    target_actor(data["next_observations"]) + clipped_noise
                 ).clamp(min_action, max_action)
-                qf1_next_target = qf1_target(data.next_observations, next_state_actions)
-                qf2_next_target = qf2_target(data.next_observations, next_state_actions)
+                qf1_next_target = qf1_target(
+                    data["next_observations"], next_state_actions
+                )
+                qf2_next_target = qf2_target(
+                    data["next_observations"], next_state_actions
+                )
                 min_qf_next_target = torch.min(qf1_next_target, qf2_next_target)
-                next_q_value = data.rewards.flatten() + (
-                    1 - data.dones.flatten()
+                next_q_value = data["rewards"].flatten() + (
+                    1 - data["dones"].flatten()
                 ) * args.gamma * (min_qf_next_target).view(-1)
 
-            qf1_a_values = qf1(data.observations, data.actions).view(-1)
-            qf2_a_values = qf2(data.observations, data.actions).view(-1)
+            qf1_a_values = qf1(data["observations"], data["actions"]).view(-1)
+            qf2_a_values = qf2(data["observations"], data["actions"]).view(-1)
             qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
             qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
             qf_loss = qf1_loss + qf2_loss
@@ -338,7 +341,9 @@ def main(args):
             q_optimizer.step()
 
             if global_step % args.policy_frequency == 0:
-                actor_loss = -qf1(data.observations, actor(data.observations)).mean()
+                actor_loss = -qf1(
+                    data["observations"], actor(data["observations"])
+                ).mean()
                 actor_optimizer.zero_grad()
                 actor_loss.backward()
                 actor_optimizer.step()

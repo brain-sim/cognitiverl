@@ -25,10 +25,7 @@ from torchrl.data import LazyTensorStorage, ReplayBuffer
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import seed_everything
 
-### TODO 1 : Buffer Memory issue when directly loading into GPU.
-### Possible solution 1 : Load into CPU and then transfer to GPU.
-### Possible solution 2 : Use a lesser buffer memory size.
-### TODO 2 : Batch size (global) and transition batch size should be different.
+### TODO : Batch size (global) and transition batch size should be different.
 ### The current code only works if they are both the same.
 
 
@@ -73,7 +70,7 @@ class ExperimentArgs:
     """total timesteps of the experiments"""
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
-    buffer_size: int = int(1e5)
+    buffer_size: int = 1_000_000
     """the replay memory buffer size"""
     gamma: float = 0.99
     """the discount factor gamma"""
@@ -309,7 +306,9 @@ def main(args):
         capturable=args.cudagraphs and not args.compile,
     )
 
-    rb = ReplayBuffer(storage=LazyTensorStorage(args.buffer_size, device=device))
+    rb = ReplayBuffer(
+        storage=LazyTensorStorage(args.buffer_size, device=torch.device("cpu"))
+    )
 
     def batched_qf(params, obs, action, next_q_value=None):
         with params.to_module(qnet):
@@ -324,11 +323,13 @@ def main(args):
     action_scale = target_actor.action_scale
 
     def update_main(data):
-        observations = data["observations"]
-        next_observations = data["next_observations"]
-        actions = data["actions"]
-        rewards = data["rewards"]
-        dones = data["dones"]
+        observations, next_observations, actions, rewards, dones = (
+            data["observations"],
+            data["next_observations"],
+            data["actions"],
+            data["rewards"],
+            data["dones"],
+        )
         clipped_noise = torch.randn_like(actions)
         clipped_noise = (
             clipped_noise.mul(policy_noise)
@@ -361,9 +362,10 @@ def main(args):
         return TensorDict(qf_loss=qf_loss.detach())
 
     def update_pol(data):
+        observations = data["observations"]
         actor_optimizer.zero_grad()
         with qnet_params.data[0].to_module(qnet):
-            actor_loss = -qnet(data["observations"], actor(data["observations"])).mean()
+            actor_loss = -qnet(observations, actor(observations)).mean()
 
         actor_loss.backward()
         actor_optimizer.step()
@@ -380,8 +382,14 @@ def main(args):
         policy = torch.compile(policy, mode=mode)
 
     if args.cudagraphs:
-        update_main = CudaGraphModule(update_main, in_keys=[], out_keys=[], warmup=5)
-        update_pol = CudaGraphModule(update_pol, in_keys=[], out_keys=[], warmup=5)
+        update_main = CudaGraphModule(
+            update_main,
+            warmup=5,
+        )
+        update_pol = CudaGraphModule(
+            update_pol,
+            warmup=5,
+        )
         policy = CudaGraphModule(policy)
 
     # TRY NOT TO MODIFY: start the game
@@ -423,7 +431,7 @@ def main(args):
             terminations=infos["terminations"],
             dones=dones,
             batch_size=obs.shape[0],
-            device=device,
+            device=torch.device("cpu"),
         )
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
@@ -432,7 +440,7 @@ def main(args):
 
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
-            print(data.shape)
+            data = data.to(device)
             out_main = update_main(data)
             if global_step % args.policy_frequency == 0:
                 out_main.update(update_pol(data))

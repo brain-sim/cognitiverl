@@ -20,10 +20,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from isaaclab.utils import configclass
 from utils import seed_everything
 
-### TODO : Buffer Memory issue when directly loading into GPU.
-### Possible solution 1 : Load into CPU and then transfer to GPU.
-### Possible solution 2 : Use a lesser buffer memory size.
-
 
 @configclass
 class EnvArgs:
@@ -64,7 +60,7 @@ class ExperimentArgs:
 
     total_timesteps: int = 1_000_000
     """total timesteps of the experiments"""
-    buffer_size: int = int(1e5)
+    buffer_size: int = 1_000_000
     """the replay memory buffer size"""
     gamma: float = 0.99
     """the discount factor gamma"""
@@ -72,7 +68,7 @@ class ExperimentArgs:
     """target smoothing coefficient (default: 0.005)"""
     batch_size: int = 256
     """the batch size of sample from the reply memory"""
-    learning_starts: int = 5e3
+    learning_starts: int = 10
     """timestep to start learning"""
     policy_lr: float = 3e-4
     """the learning rate of the policy network optimizer"""
@@ -297,7 +293,9 @@ def main(args):
     else:
         alpha = args.alpha
 
-    rb = ReplayBuffer(storage=LazyTensorStorage(args.buffer_size, device=device))
+    rb = ReplayBuffer(
+        storage=LazyTensorStorage(args.buffer_size, device=torch.device("cpu"))
+    )
     start_time = time.time()
 
     # TRY NOT TO MODIFY: start the game
@@ -317,7 +315,7 @@ def main(args):
             actions = torch.from_numpy(envs.action_space.sample()).float().to(device)
         else:
             actions, _, _ = actor.get_action(obs)
-            
+
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, rewards, dones, infos = envs.step(actions)
 
@@ -338,7 +336,7 @@ def main(args):
             terminations=infos["terminations"],
             dones=dones,
             batch_size=obs.shape[0],
-            device=device,
+            device=torch.device("cpu"),
         )
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
@@ -348,21 +346,26 @@ def main(args):
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
             with torch.no_grad():
+                data = data.to(device)
                 next_state_actions, next_state_log_pi, _ = actor.get_action(
-                    data.next_observations
+                    data["next_observations"]
                 )
-                qf1_next_target = qf1_target(data.next_observations, next_state_actions)
-                qf2_next_target = qf2_target(data.next_observations, next_state_actions)
+                qf1_next_target = qf1_target(
+                    data["next_observations"], next_state_actions
+                )
+                qf2_next_target = qf2_target(
+                    data["next_observations"], next_state_actions
+                )
                 min_qf_next_target = (
                     torch.min(qf1_next_target, qf2_next_target)
                     - alpha * next_state_log_pi
                 )
-                next_q_value = data.rewards.flatten() + (
-                    1 - data.dones.flatten()
+                next_q_value = data["rewards"].flatten() + (
+                    1 - data["dones"].flatten()
                 ) * args.gamma * (min_qf_next_target).view(-1)
 
-            qf1_a_values = qf1(data.observations, data.actions).view(-1)
-            qf2_a_values = qf2(data.observations, data.actions).view(-1)
+            qf1_a_values = qf1(data["observations"], data["actions"]).view(-1)
+            qf2_a_values = qf2(data["observations"], data["actions"]).view(-1)
             qf1_loss = F.mse_loss(qf1_a_values, next_q_value)
             qf2_loss = F.mse_loss(qf2_a_values, next_q_value)
             qf_loss = qf1_loss + qf2_loss
@@ -376,9 +379,9 @@ def main(args):
                 for _ in range(
                     args.policy_frequency
                 ):  # compensate for the delay by doing 'actor_update_interval' instead of 1
-                    pi, log_pi, _ = actor.get_action(data.observations)
-                    qf1_pi = qf1(data.observations, pi)
-                    qf2_pi = qf2(data.observations, pi)
+                    pi, log_pi, _ = actor.get_action(data["observations"])
+                    qf1_pi = qf1(data["observations"], pi)
+                    qf2_pi = qf2(data["observations"], pi)
                     min_qf_pi = torch.min(qf1_pi, qf2_pi)
                     actor_loss = ((alpha * log_pi) - min_qf_pi).mean()
 
@@ -388,7 +391,7 @@ def main(args):
 
                     if args.autotune:
                         with torch.no_grad():
-                            _, log_pi, _ = actor.get_action(data.observations)
+                            _, log_pi, _ = actor.get_action(data["observations"])
                         alpha_loss = (
                             -log_alpha.exp() * (log_pi + target_entropy)
                         ).mean()
