@@ -3,12 +3,11 @@ import os
 
 os.environ["TORCHDYNAMO_INLINE_INBUILT_NN_MODULES"] = "1"
 
-import math
 import os
-import random
+import sys
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import asdict
 
 import gymnasium as gym
 import numpy as np
@@ -17,34 +16,62 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import tqdm
-import tyro
 import wandb
+from isaaclab.utils import configclass
 from tensordict import TensorDict, from_module, from_modules
 from tensordict.nn import CudaGraphModule
 from torchrl.data import LazyTensorStorage, ReplayBuffer
 
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from utils import seed_everything
 
-@dataclass
-class Args:
-    exp_name: str = os.path.basename(__file__)[: -len(".py")]
-    """the name of this experiment"""
+### TODO : Buffer Memory issue when directly loading into GPU.
+### Possible solution 1 : Load into CPU and then transfer to GPU.
+### Possible solution 2 : Use a lesser buffer memory size.
+
+
+@configclass
+class EnvArgs:
+    task: str = "CognitiveRL-Nav-v2"
+    """the id of the environment"""
+    env_cfg_entry_point: str = "env_cfg_entry_point"
+    """the entry point of the environment configuration"""
+    num_envs: int = 64
+    """the number of parallel environments to simulate"""
     seed: int = 1
-    """seed of the experiment"""
-    torch_deterministic: bool = True
-    """if toggled, `torch.backends.cudnn.deterministic=False`"""
-    cuda: bool = True
-    """if toggled, cuda will be enabled by default"""
+    """seed of the environment"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
+    video: bool = False
+    """record videos during training"""
+    video_length: int = 200
+    """length of the recorded video (in steps)"""
+    video_interval: int = 2000
+    """interval between video recordings (in steps)"""
+    disable_fabric: bool = False
+    """disable fabric and use USD I/O operations"""
+    distributed: bool = False
+    """run training with multiple GPUs or nodes"""
+    headless: bool = True
+    """run training in headless mode"""
+    enable_cameras: bool = True
+    """enable cameras to record sensor inputs."""
 
-    # Algorithm specific arguments
-    env_id: str = "HalfCheetah-v4"
-    """the id of the environment"""
-    total_timesteps: int = 1000000
+
+@configclass
+class ExperimentArgs:
+    exp_name: str = os.path.basename(__file__)[: -len(".py")]
+    """the name of this experiment"""
+    torch_deterministic: bool = True
+    """if toggled, `torch.backends.cudnn.deterministic=False`"""
+    device: str = "cuda:0"
+    """cuda:0 will be enabled by default"""
+
+    total_timesteps: int = 1_000_000
     """total timesteps of the experiments"""
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
-    buffer_size: int = int(1e6)
+    buffer_size: int = int(1e5)
     """the replay memory buffer size"""
     gamma: float = 0.99
     """the discount factor gamma"""
@@ -64,23 +91,78 @@ class Args:
     """noise clip parameter of the Target Policy Smoothing Regularization"""
 
     measure_burnin: int = 3
-    """Number of burn-in iterations for speed measure."""
 
-    compile: bool = False
-    """whether to use torch.compile."""
-    cudagraphs: bool = False
-    """whether to use cudagraphs on top of compile."""
+    # Agent config
+    agent_type: str = "CNNTD3Agent"
+
+    cudagraphs: bool = True
+    """use cudagraphs"""
+    compile: bool = True
+    """use torch.compile"""
 
 
-def make_env(env_id, seed, idx, capture_video, run_name):
+@configclass
+class Args(ExperimentArgs, EnvArgs):
+    pass
+
+
+def launch_app(args):
+    from argparse import Namespace
+
+    app_launcher = AppLauncher(Namespace(**asdict(args)))
+    return app_launcher.app
+
+
+def get_args():
+    exp_args = ExperimentArgs()
+    env_args = EnvArgs()
+    merged_args = {**asdict(exp_args), **asdict(env_args)}
+    args = Args(**merged_args)
+    return args
+
+
+try:
+    from isaaclab.app import AppLauncher
+
+    args = get_args()
+    simulation_app = launch_app(args)
+except ImportError:
+    raise ImportError("Isaac Lab is not installed. Please install it first.")
+
+
+def make_env(task, seed, idx, capture_video, run_name):
     def thunk():
         if capture_video and idx == 0:
-            env = gym.make(env_id, render_mode="rgb_array")
+            env = gym.make(task, render_mode="rgb_array")
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
         else:
-            env = gym.make(env_id)
+            env = gym.make(task)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         env.action_space.seed(seed)
+        return env
+
+    return thunk
+
+
+def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **args):
+    import isaaclab_tasks  # noqa: F401
+    from isaaclab_rl.rsl_rl.vecenv_wrapper import RslRlVecEnvWrapper
+    from isaaclab_rl.torchrl import IsaacLabRecordEpisodeStatistics
+    from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+
+    import cognitiverl.tasks  # noqa: F401
+
+    def thunk():
+        cfg = parse_env_cfg(
+            task, device, num_envs=num_envs, use_fabric=not disable_fabric
+        )
+        env = gym.make(
+            task,
+            cfg=cfg,
+            render_mode="rgb_array" if capture_video else None,
+        )
+        env = IsaacLabRecordEpisodeStatistics(env)
+        env = RslRlVecEnvWrapper(env, clip_actions=1.0)
         return env
 
     return thunk
@@ -142,9 +224,10 @@ class Actor(nn.Module):
         )
 
 
-if __name__ == "__main__":
-    args = tyro.cli(Args)
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{args.compile}__{args.cudagraphs}"
+def main(args):
+    run_name = (
+        f"{args.task}__{args.exp_name}__{args.seed}__{args.compile}__{args.cudagraphs}"
+    )
 
     wandb.init(
         project="td3_continuous_action",
@@ -153,25 +236,22 @@ if __name__ == "__main__":
         save_code=True,
     )
 
-    # TRY NOT TO MODIFY: seeding
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    torch.backends.cudnn.deterministic = args.torch_deterministic
-
-    device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    device = (
+        torch.device(args.device) if torch.cuda.is_available() else torch.device("cpu")
+    )
 
     # env setup
-    envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, args.seed, 0, args.capture_video, run_name)]
-    )
-    n_act = math.prod(envs.single_action_space.shape)
-    n_obs = math.prod(envs.single_observation_space.shape)
-    action_low, action_high = (
-        float(envs.single_action_space.low[0]),
-        float(envs.single_action_space.high[0]),
-    )
-    assert isinstance(envs.single_action_space, gym.spaces.Box), (
+    envs = make_isaaclab_env(
+        args.task, args.device, args.num_envs, args.disable_fabric, args.capture_video
+    )()
+    # TRY NOT TO MODIFY: seeding
+    seed_everything(envs, args.seed)
+    n_obs = int(np.prod(envs.observation_space.shape[1:]))
+    n_act = int(np.prod(envs.action_space.shape[1:]))
+
+    action_low = float(envs.action_space.high[0].max())
+    action_high = float(envs.action_space.low[0].min())
+    assert isinstance(envs.action_space, gym.spaces.Box), (
         "only continuous action space is supported"
     )
 
@@ -227,7 +307,6 @@ if __name__ == "__main__":
         capturable=args.cudagraphs and not args.compile,
     )
 
-    envs.single_observation_space.dtype = np.float32
     rb = ReplayBuffer(storage=LazyTensorStorage(args.buffer_size, device=device))
 
     def batched_qf(params, obs, action, next_q_value=None):
@@ -304,8 +383,7 @@ if __name__ == "__main__":
         policy = CudaGraphModule(policy)
 
     # TRY NOT TO MODIFY: start the game
-    obs, _ = envs.reset(seed=args.seed)
-    obs = torch.as_tensor(obs, device=device, dtype=torch.float)
+    obs, _ = envs.reset()
     pbar = tqdm.tqdm(range(args.total_timesteps))
     start_time = None
     max_ep_ret = -float("inf")
@@ -317,45 +395,31 @@ if __name__ == "__main__":
             start_time = time.time()
             measure_burnin = global_step
 
-        # ALGO LOGIC: put action logic here
+        #     # ALGO LOGIC: put action logic here
         if global_step < args.learning_starts:
-            actions = np.array(
-                [envs.single_action_space.sample() for _ in range(envs.num_envs)]
-            )
+            actions = torch.from_numpy(envs.action_space.sample()).float().to(device)
         else:
             actions = policy(obs=obs)
-            actions = actions.clamp(action_low, action_high).cpu().numpy()
 
         # TRY NOT TO MODIFY: execute the game and log data.
-        next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+        next_obs, rewards, dones, infos = envs.step(actions)
 
         # TRY NOT TO MODIFY: record rewards for plotting purposes
-        if "final_info" in infos:
-            for info in infos["final_info"]:
-                r = float(info["episode"]["r"].reshape(()))
+        if "episode" in infos:
+            for r in infos["episode"]["r"]:
                 max_ep_ret = max(max_ep_ret, r)
                 avg_returns.append(r)
             desc = f"global_step={global_step}, episodic_return={torch.tensor(avg_returns).mean(): 4.2f} (max={max_ep_ret: 4.2f})"
 
         # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
-        next_obs = torch.as_tensor(next_obs, device=device, dtype=torch.float)
         real_next_obs = next_obs.clone()
-        if "final_observation" in infos:
-            real_next_obs[truncations] = torch.as_tensor(
-                np.asarray(
-                    list(infos["final_observation"][truncations]), dtype=np.float32
-                ),
-                device=device,
-                dtype=torch.float,
-            )
-        # obs = torch.as_tensor(obs, device=device, dtype=torch.float)
         transition = TensorDict(
             observations=obs,
             next_observations=real_next_obs,
             actions=torch.as_tensor(actions, device=device, dtype=torch.float),
             rewards=torch.as_tensor(rewards, device=device, dtype=torch.float),
-            terminations=terminations,
-            dones=terminations,
+            terminations=infos["terminations"],
+            dones=dones,
             batch_size=obs.shape[0],
             device=device,
         )
@@ -393,3 +457,13 @@ if __name__ == "__main__":
                 )
 
     envs.close()
+
+
+if __name__ == "__main__":
+    try:
+        os.environ["WANDB_MODE"] = "dryrun"
+        main(args)
+    except Exception as e:
+        print("Exception:", e)
+    finally:
+        simulation_app.close()

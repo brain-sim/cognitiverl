@@ -96,11 +96,6 @@ class Args(ExperimentArgs, EnvArgs):
     pass
 
 
-@configclass
-class Args(ExperimentArgs, EnvArgs):
-    pass
-
-
 def launch_app(args):
     from argparse import Namespace
 

@@ -317,7 +317,7 @@ def main(args):
             actions = torch.from_numpy(envs.action_space.sample()).float().to(device)
         else:
             actions, _, _ = actor.get_action(obs)
-
+            
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, rewards, dones, infos = envs.step(actions)
 
