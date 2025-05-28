@@ -25,9 +25,11 @@ from torchrl.data import LazyTensorStorage, ReplayBuffer
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from utils import seed_everything
 
-### TODO : Buffer Memory issue when directly loading into GPU.
+### TODO 1 : Buffer Memory issue when directly loading into GPU.
 ### Possible solution 1 : Load into CPU and then transfer to GPU.
 ### Possible solution 2 : Use a lesser buffer memory size.
+### TODO 2 : Batch size (global) and transition batch size should be different.
+### The current code only works if they are both the same.
 
 
 @configclass
@@ -77,13 +79,13 @@ class ExperimentArgs:
     """the discount factor gamma"""
     tau: float = 0.005
     """target smoothing coefficient (default: 0.005)"""
-    batch_size: int = 256
+    batch_size: int = 64
     """the batch size of sample from the reply memory"""
     policy_noise: float = 0.2
     """the scale of policy noise"""
     exploration_noise: float = 0.1
     """the scale of exploration noise"""
-    learning_starts: int = 25e3
+    learning_starts: int = 10
     """timestep to start learning"""
     policy_frequency: int = 2
     """the frequency of training policy (delayed)"""
@@ -430,6 +432,7 @@ def main(args):
 
         # ALGO LOGIC: training.
         if global_step > args.learning_starts:
+            print(data.shape)
             out_main = update_main(data)
             if global_step % args.policy_frequency == 0:
                 out_main.update(update_pol(data))
