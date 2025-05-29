@@ -81,9 +81,9 @@ class ExperimentArgs:
     """the discount factor gamma"""
     tau: float = 0.005
     """target smoothing coefficient (default: 0.005)"""
-    batch_size: int = 64
+    batch_size: int = 256
     """the batch size of sample from the reply memory"""
-    learning_starts: int = 1e3
+    learning_starts: int = 5e3
     """timestep to start learning"""
     policy_lr: float = 3e-4
     """the learning rate of the policy network optimizer"""
@@ -160,8 +160,10 @@ def make_env(task, seed, idx, capture_video, run_name):
 
 def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **args):
     import isaaclab_tasks  # noqa: F401
-    from isaaclab_rl.rsl_rl.vecenv_wrapper import RslRlVecEnvWrapper
-    from isaaclab_rl.torchrl import IsaacLabRecordEpisodeStatistics
+    from isaaclab_rl.torchrl import (
+        IsaacLabRecordEpisodeStatistics,
+        IsaacLabVecEnvWrapper,
+    )
     from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
     import cognitiverl.tasks  # noqa: F401
@@ -176,7 +178,7 @@ def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **a
             render_mode="rgb_array" if capture_video else None,
         )
         env = IsaacLabRecordEpisodeStatistics(env)
-        env = RslRlVecEnvWrapper(env, clip_actions=1.0)
+        env = IsaacLabVecEnvWrapper(env, clip_actions=1.0)
         return env
 
     return thunk
@@ -213,18 +215,18 @@ class Actor(nn.Module):
         self.register_buffer(
             "action_scale",
             torch.tensor(
-                (env.action_space.high - env.action_space.low) / 2.0,
+                (env.action_space.high[0] - env.action_space.low[0]) / 2.0,
                 dtype=torch.float32,
                 device=device,
-            ),
+            ).unsqueeze(0),
         )
         self.register_buffer(
             "action_bias",
             torch.tensor(
-                (env.action_space.high + env.action_space.low) / 2.0,
+                (env.action_space.high[0] + env.action_space.low[0]) / 2.0,
                 dtype=torch.float32,
                 device=device,
-            ),
+            ).unsqueeze(0),
         )
 
     def forward(self, x):
@@ -277,7 +279,7 @@ def main(args):
         args.capture_video,
     )()
     # TRY NOT TO MODIFY: seeding
-    seed_everything(envs, args.seed)
+    seed_everything(envs, args.seed, use_torch=True, torch_deterministic=True)
     n_obs = int(np.prod(envs.observation_space.shape[1:]))
     n_act = int(np.prod(envs.action_space.shape[1:]))
     assert isinstance(envs.action_space, gym.spaces.Box), (

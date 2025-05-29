@@ -74,7 +74,7 @@ class ExperimentArgs:
     """the scale of policy noise"""
     exploration_noise: float = 0.1
     """the scale of exploration noise"""
-    learning_starts: int = 10
+    learning_starts: int = int(25e3)
     """timestep to start learning"""
     policy_frequency: int = 2
     """the frequency of training policy (delayed)"""
@@ -132,8 +132,10 @@ def make_env(task, seed, idx, capture_video, run_name):
 
 def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **args):
     import isaaclab_tasks  # noqa: F401
-    from isaaclab_rl.rsl_rl.vecenv_wrapper import RslRlVecEnvWrapper
-    from isaaclab_rl.torchrl import IsaacLabRecordEpisodeStatistics
+    from isaaclab_rl.torchrl import (
+        IsaacLabRecordEpisodeStatistics,
+        IsaacLabVecEnvWrapper,
+    )
     from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
     import cognitiverl.tasks  # noqa: F401
@@ -148,7 +150,7 @@ def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **a
             render_mode="rgb_array" if capture_video else None,
         )
         env = IsaacLabRecordEpisodeStatistics(env)
-        env = RslRlVecEnvWrapper(env, clip_actions=1.0)
+        env = IsaacLabVecEnvWrapper(env, clip_actions=1.0)
         return env
 
     return thunk
@@ -231,7 +233,7 @@ def main(args):
         args.task, args.device, args.num_envs, args.disable_fabric, args.capture_video
     )()
     # TRY NOT TO MODIFY: seeding
-    seed_everything(envs, args.seed)
+    seed_everything(envs, args.seed, use_torch=True, torch_deterministic=True)
     n_obs = int(np.prod(envs.observation_space.shape[1:]))
     n_act = int(np.prod(envs.action_space.shape[1:]))
     assert isinstance(envs.action_space, gym.spaces.Box), (

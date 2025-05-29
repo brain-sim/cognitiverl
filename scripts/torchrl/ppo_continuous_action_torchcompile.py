@@ -170,8 +170,10 @@ def make_env(env_id, idx, capture_video, run_name, gamma):
 
 def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **args):
     import isaaclab_tasks  # noqa: F401
-    from isaaclab_rl.rsl_rl.vecenv_wrapper import RslRlVecEnvWrapper
-    from isaaclab_rl.torchrl import IsaacLabRecordEpisodeStatistics
+    from isaaclab_rl.torchrl import (
+        IsaacLabRecordEpisodeStatistics,
+        IsaacLabVecEnvWrapper,
+    )
     from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
     import cognitiverl.tasks  # noqa: F401
@@ -186,7 +188,7 @@ def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **a
             render_mode="rgb_array" if capture_video else None,
         )
         env = IsaacLabRecordEpisodeStatistics(env)
-        env = RslRlVecEnvWrapper(env)
+        env = IsaacLabVecEnvWrapper(env)
         # env = gym.wrappers.RecordEpisodeStatistics(env)
         return env
 
@@ -376,7 +378,7 @@ def main(args):
         args.capture_video,
     )()
     # TRY NOT TO MODIFY: seeding
-    seed_everything(envs, args.seed)
+    seed_everything(envs, args.seed, use_torch=True, torch_deterministic=True)
     set_high_precision()
     n_obs = int(np.prod(envs.observation_space.shape[1:]))
     n_act = int(np.prod(envs.action_space.shape[1:]))
