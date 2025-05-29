@@ -382,19 +382,14 @@ def main(args):
             actions = envs.action_space.sample()
         else:
             actions = actor.apply(actor_state.params, obs)
-            actions = np.array(
-                [
-                    (
-                        jax.device_get(actions)[0]
-                        + np.random.normal(
-                            0,
-                            max_action * args.exploration_noise,
-                            size=envs.action_space.shape,
-                        )
-                    ).clip(min_action, max_action)
-                ]
-            )
-            print(actions.shape)
+            actions = (
+                jax.device_get(actions)
+                + np.random.normal(
+                    0,
+                    max_action * args.exploration_noise,
+                    size=envs.action_space.shape,
+                ).astype(actions.dtype)
+            ).clip(min_action, max_action)
 
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, rewards, dones, infos = envs.step(actions)
@@ -408,6 +403,7 @@ def main(args):
 
         # TRY NOT TO MODIFY: save data to replay buffer; handle `final_observation`
         real_next_obs = next_obs.copy()
+        print(obs.shape, real_next_obs.shape, actions.shape, rewards.shape, dones.shape)
         rb.add(obs, real_next_obs, actions, rewards, infos["terminations"], infos)
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
