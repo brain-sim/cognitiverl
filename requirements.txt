@@ -74,10 +74,10 @@ isaacsim-storage==4.5.0.0
 isaacsim-template==4.5.0.0
 isaacsim-test==4.5.0.0
 isaacsim-utils==4.5.0.0
-jax==0.6.0
-jax-cuda12-pjrt==0.6.0
-jax-cuda12-plugin==0.6.0
-jaxlib==0.6.0
+jax==0.5.3
+jax-cuda12-pjrt==0.5.3
+jax-cuda12-plugin==0.5.3
+jaxlib==0.5.3
 jedi==0.19.2
 jinja2==3.1.4
 jmespath==1.0.1
