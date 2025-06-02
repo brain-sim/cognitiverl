@@ -103,6 +103,21 @@ class ExperimentArgs:
     # Agent config
     agent_type: str = "CNNPPOAgent"
 
+    checkpoint_interval: int = 10000
+    """environment steps between saving checkpoints."""
+    play_interval: int = 10000
+    """environment steps between playing evaluation episodes during training."""
+    run_play: bool = False
+    """whether to play evaluation episodes during training."""
+    run_best: bool = False
+    """whether to run the best model after training."""
+    render_play: bool = False
+    """whether to render episodes when playing during training."""
+    num_eval_envs: int = 10
+    """number of environments to run for evaluation/play."""
+    num_eval_env_steps: int = 200
+    """number of steps to run for evaluation/play."""
+
 
 @configclass
 class Args(ExperimentArgs, EnvArgs):
@@ -156,7 +171,10 @@ def make_env(env_id, idx, capture_video, run_name, gamma):
 
 def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **args):
     import isaaclab_tasks  # noqa: F401
-    from isaaclab_rl.torchrl import IsaacLabRecordEpisodeStatistics, IsaacLabVecEnvWrapper
+    from isaaclab_rl.torchrl import (
+        IsaacLabRecordEpisodeStatistics,
+        IsaacLabVecEnvWrapper,
+    )
     from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
     import cognitiverl.tasks  # noqa: F401
@@ -178,18 +196,50 @@ def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **a
 
 
 def main(args):
+    def run_play(play_agent):
+        play_agent.eval()
+        # single-environment evaluation
+        eval_env = make_isaaclab_env(
+            args.task,
+            args.device,
+            args.eval_envs,
+            args.disable_fabric,
+            args.capture_video,
+        )()
+        eval_env.seed(args.seed)
+        for step in range(args.eval_steps):
+            obs, _ = eval_env.reset()
+            with torch.no_grad():
+                action, _, _, _ = play_agent.get_action_and_value(obs)
+            obs, reward, done, infos = eval_env.step(action)
+            if args.render_play:
+                eval_env.render()
+        eval_env.close()
+        play_agent.train()
+
     run_name = f"{args.task}__{args.exp_name}__{args.seed}"
 
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
 
-    wandb.init(
+    # initialize wandb run
+    run = wandb.init(
         project="ppo_continuous_action",
         name=f"{os.path.splitext(os.path.basename(__file__))[0]}-{run_name}",
         config=vars(args),
         save_code=True,
     )
+
+    # prepare local checkpoint directory inside the wandb run folder
+    run_dir = run.dir
+    ckpt_dir = os.path.join(run_dir, "checkpoints")
+    os.makedirs(ckpt_dir, exist_ok=True)
+
+    # tracking best model
+    best_return = -float("inf")
+    best_step = 0
+    best_ckpt = None
 
     device = (
         torch.device(args.device) if torch.cuda.is_available() else torch.device("cpu")
@@ -385,7 +435,43 @@ def main(args):
                 step=global_step,
             )
 
+        if (
+            args.run_play
+            and global_step_burnin is not None
+            and iteration % args.play_interval == 0
+        ):
+            run_play(agent)
+
+        # save every checkpoint_interval steps
+        if global_step_burnin is not None and iteration % args.checkpoint_interval == 0:
+            ckpt_path = os.path.join(ckpt_dir, f"ckpt_{global_step}.pt")
+            torch.save(agent.state_dict(), ckpt_path)
+
+            mean_return = float(torch.tensor(avg_returns).mean())
+            if mean_return > best_return:
+                best_return = mean_return
+                best_step = global_step
+                best_ckpt = ckpt_path
+
     envs.close()
+
+    # upload the best checkpoint as an Artifact
+    if best_ckpt is not None:
+        print(f"Uploading best checkpoint (step={best_step}, return={best_return:.2f})")
+        artifact = wandb.Artifact(
+            name="ppo-best-checkpoint",
+            type="model",
+            description=f"Best TD3 model at step {best_step} with return {best_return:.2f}",
+        )
+        artifact.add_file(best_ckpt)
+        run.log_artifact(artifact)
+
+    # after training: run best model
+    if args.run_best and best_ckpt is not None and best_step > 0:
+        print(f"Running best model from step {best_step} (return={best_return})")
+        agent.load_state_dict(torch.load(best_ckpt))
+        agent.to(device)
+        run_play(agent)
 
 
 if __name__ == "__main__":

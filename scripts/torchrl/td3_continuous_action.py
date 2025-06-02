@@ -62,7 +62,7 @@ class ExperimentArgs:
     """total timesteps of the experiments"""
     learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
-    buffer_size: int = 1_000_000
+    buffer_size: int = 25_000
     """the replay memory buffer size"""
     gamma: float = 0.99
     """the discount factor gamma"""
@@ -85,6 +85,22 @@ class ExperimentArgs:
 
     # Agent config
     agent_type: str = "CNNTD3Agent"
+
+    checkpoint_interval: int = 10000
+    """environment steps between saving checkpoints."""
+    play_interval: int = 10000
+    """environment steps between playing evaluation episodes during training."""
+    run_play: bool = False
+    """whether to play evaluation episodes during training."""
+    render_play: bool = False
+    """whether to render episodes when playing during training."""
+    render_best: bool = False
+    """whether to render episodes when running the best model after training."""
+    num_eval_episodes: int = 1
+    """number of episodes to run for evaluation/play."""
+
+    def __post_init__(self):
+        self.buffer_size = min(self.buffer_size, self.total_timesteps)
 
 
 @configclass
@@ -264,7 +280,9 @@ def main(args):
 
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset()
-    pbar = tqdm.tqdm(range(args.total_timesteps))
+    args.num_iterations = args.total_timesteps // args.num_envs
+    args.learning_starts = args.learning_starts // args.num_envs
+    pbar = tqdm.tqdm(range(args.num_iterations))
     start_time = None
     max_ep_ret = -float("inf")
     avg_returns = deque(maxlen=20)
@@ -392,7 +410,6 @@ def main(args):
 
 if __name__ == "__main__":
     try:
-        os.environ["WANDB_MODE"] = "disabled"
         main(get_args())
     except Exception as e:
         print("Exception:", e)

@@ -75,7 +75,7 @@ class ExperimentArgs:
     """the environment id of the task"""
     total_timesteps: int = 1_000_000
     """total timesteps of the experiments"""
-    buffer_size: int = 1_000_000
+    buffer_size: int = 25_000
     """the replay memory buffer size"""
     gamma: float = 0.99
     """the discount factor gamma"""
@@ -113,6 +113,9 @@ class ExperimentArgs:
     """use cudagraphs"""
     compile: bool = True
     """use torch.compile"""
+
+    def __post_init__(self):
+        self.buffer_size = min(self.buffer_size, self.total_timesteps)
 
 
 @configclass
@@ -414,7 +417,9 @@ def main(args):
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset()
     obs = torch.as_tensor(obs, device=device, dtype=torch.float)
-    pbar = tqdm.tqdm(range(args.total_timesteps))
+    args.num_iterations = args.total_timesteps // args.num_envs
+    args.learning_starts = args.learning_starts // args.num_envs
+    pbar = tqdm.tqdm(range(args.num_iterations))
     start_time = None
     max_ep_ret = -float("inf")
     avg_returns = deque(maxlen=20)
@@ -498,7 +503,6 @@ def main(args):
 
 if __name__ == "__main__":
     try:
-        os.environ["WANDB_MODE"] = "dryrun"
         main(args)
     except Exception as e:
         print("Exception:", e)
