@@ -7,12 +7,20 @@ import torch
 
 
 def seed_everything(
-    envs, seed, use_torch=False, use_jax=False, torch_deterministic=False
+    envs,
+    seed,
+    use_torch=False,
+    use_jax=False,
+    torch_deterministic=False,
 ):
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
     np.random.seed(seed)
-    envs.seed(seed=seed)
+    if isinstance(envs, list):
+        for env in envs:
+            env.seed(seed=seed)
+    else:
+        envs.seed(seed=seed)
     if use_torch:
         torch.manual_seed(seed)
         if torch.cuda.is_available():

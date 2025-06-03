@@ -441,6 +441,7 @@ def main(args):
                 )
 
     envs.close()
+    wandb.finish()
 
 
 if __name__ == "__main__":

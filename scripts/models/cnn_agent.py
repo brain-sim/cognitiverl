@@ -1,4 +1,3 @@
-import numpy as np
 import torch
 import torch.nn as nn
 from torch.distributions.normal import Normal
@@ -13,7 +12,7 @@ class CNNPPOAgent(nn.Module):
     extraction, followed by fully connected layers for policy and value estimation.
     """
 
-    def __init__(self, envs):
+    def __init__(self, n_obs, n_act):
         super().__init__()
 
         # Image input dimensions
@@ -52,9 +51,8 @@ class CNNPPOAgent(nn.Module):
         self.critic = layer_init(nn.Linear(64, 1), std=1.0)
 
         # Actor head (mean) and log std parameter
-        action_dim = int(np.prod(envs.action_space.shape[1:]))
-        self.actor_mean = layer_init(nn.Linear(64, action_dim), std=1.0)
-        self.actor_logstd = nn.Parameter(torch.zeros(1, action_dim))
+        self.actor_mean = layer_init(nn.Linear(64, n_act), std=1.0)
+        self.actor_logstd = nn.Parameter(torch.zeros(1, n_act))
 
     def extract_image(self, x: torch.Tensor) -> torch.Tensor:
         """Extract features from image portion of the state vector."""
