@@ -5,7 +5,7 @@ Setting up  TurboVNC viewer on the server machine to forward the display to the 
 
 2. As root run the following command to install the downloaded package:
    ```bash
-   sudo sh -C "wget -q -O- https://packagecloud.io/dcommander/turbovnc/gpgkey | gpg --dearmor >/etc/apt/trusted.gpg.d/TurboVNC.gpg"
+   sudo sh -c "wget -q -O- https://packagecloud.io/dcommander/turbovnc/gpgkey | gpg --dearmor >/etc/apt/trusted.gpg.d/TurboVNC.gpg"
    ```
 
 3. Add TurboVNC list to the system:
@@ -29,7 +29,7 @@ Setting up  VirtualGL on the server machine to enable OpenGL rendering (GPU acce
 1. Download the VirtualGL package from the official website: [VirtualGL Download](https://www.virtualgl.org/)
 2. As root run the following command to install the downloaded package:
    ```bash
-   sudo sh -C "wget -q -O- https://packagecloud.io/dcommander/virtualgl/gpgkey | gpg --dearmor >/etc/apt/trusted.gpg.d/VirtualGL.gpg"
+   sudo sh -c "wget -q -O- https://packagecloud.io/dcommander/virtualgl/gpgkey | gpg --dearmor >/etc/apt/trusted.gpg.d/VirtualGL.gpg"
    ```
 3. Add VirtualGL list to the system:
     ```bash
@@ -90,7 +90,7 @@ Setting up  VirtualGL on the server machine to enable OpenGL rendering (GPU acce
 
 3. Start the TurboVNC server with the following command:
    ```bash
-   vncserver -d :1 -geometry 1920x1080 -depth 24 
+   vncserver :1 -geometry 1920x1080 -depth 24 
    ```
    This command will start a TurboVNC server on display :1 with a resolution of 1920x1080 and a color depth of 24 bits.
    You can adjust the resolution and color depth according to your needs.

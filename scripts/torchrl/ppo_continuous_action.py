@@ -42,7 +42,7 @@ class EnvArgs:
     """disable fabric and use USD I/O operations"""
     distributed: bool = False
     """run training with multiple GPUs or nodes"""
-    headless: bool = True
+    headless: bool = False
     """run training in headless mode"""
     enable_cameras: bool = True
     """enable cameras to record sensor inputs."""
@@ -116,6 +116,8 @@ class ExperimentArgs:
     """number of environments to run for evaluation/play."""
     num_eval_env_steps: int = 200
     """number of steps to run for evaluation/play."""
+    log: bool = False
+    """whether to log the training process."""
 
 
 @configclass
@@ -324,7 +326,7 @@ def main(args):
                 for r in infos["episode"]["r"]:
                     max_ep_ret = max(max_ep_ret, r)
                     avg_returns.append(r)
-                desc = f"global_step={global_step}, episodic_return={torch.tensor(avg_returns).mean(): 4.2f} (max={max_ep_ret: 4.2f})"
+                desc = f"global_step={global_step}, episodic_return={torch.tensor(avg_returns).mean():.2f} (max={max_ep_ret:.2f})"
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -471,7 +473,8 @@ def main(args):
 
 if __name__ == "__main__":
     try:
-        os.environ["WANDB_MODE"] = "dryrun"
+        if not args.log:
+            os.environ["WANDB_MODE"] = "dryrun"
         main(args)
     except Exception as e:
         print("Exception:", e)
