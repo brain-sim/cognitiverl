@@ -17,8 +17,8 @@ from .waypoint import WAYPOINT_CFG
 class SpotNavEnvCfg(DirectRLEnvCfg):
     decimation = 3  # 2
     episode_length_s = 30.0
-    action_space = 2
-    observation_space = 3078  # Changed from 8 to 9 to include minimum wall distance
+    action_space = 3
+    observation_space = 3079  # Changed from 8 to 9 to include minimum wall distance
     """
     observation_space = {
         "state": 6,

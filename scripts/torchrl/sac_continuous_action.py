@@ -18,7 +18,7 @@ from torchrl.data import LazyTensorStorage, ReplayBuffer
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from isaaclab.utils import configclass
-from utils import seed_everything
+from utils import load_args, seed_everything
 
 
 @configclass
@@ -105,11 +105,7 @@ def launch_app(args):
 
 
 def get_args():
-    exp_args = ExperimentArgs()
-    env_args = EnvArgs()
-    merged_args = {**asdict(exp_args), **asdict(env_args)}
-    args = Args(**merged_args)
-    return args
+    return load_args(Args)
 
 
 try:

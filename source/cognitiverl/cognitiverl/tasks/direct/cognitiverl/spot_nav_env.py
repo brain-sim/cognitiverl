@@ -209,24 +209,21 @@ class SpotNavEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-        # camera_cfg = TiledCameraCfg(
-        #     prim_path="/World/envs/env_.*/Robot/Rigid_Bodies/Chassis/Camera_Left",
-        #     update_period=0.05,
-        #     height=32,
-        #     width=32,
-        #     data_types=["rgb"],
-        #     spawn=None,
-        #     offset=TiledCameraCfg.OffsetCfg(
-        #         pos=(0.0, 0.0, 0.0), rot=(1, 0, 0, 0), convention="ros"
-        #     ),
-        # )
-        # self.camera = TiledCamera(camera_cfg)
+        camera_cfg = TiledCameraCfg(
+            prim_path="/World/envs/env_.*/Robot/Camera",
+            update_period=0.05,
+            height=32,
+            width=32,
+            data_types=["rgb"],
+            spawn=None,
+            offset=TiledCameraCfg.OffsetCfg(
+                pos=(0.0, 0.0, 0.0), rot=(1, 0, 0, 0), convention="ros"
+            ),
+        )
+        self.camera = TiledCamera(camera_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        self._actions = torch.zeros(
-            (self.num_envs, 3), device=self.device, dtype=torch.float32
-        )
-        self._actions[:, :2] = actions[:, :2].clone()
+        self._actions = actions.clone()
         self._actions = self._actions * self.action_scale
         self._actions = torch.nan_to_num(self._actions, 0.0)
         self._actions = torch.clamp(
@@ -284,9 +281,11 @@ class SpotNavEnv(DirectRLEnv):
         self.target_heading_error = torch.atan2(
             torch.sin(target_heading_w - heading), torch.cos(target_heading_w - heading)
         )
-        image_obs = torch.randn(self.num_envs, 3, 32, 32).to(self.device)
-        # self.camera.data.output["rgb"].float().permute(0, 3, 1, 2) / 255.0
-        # image_obs = F.interpolate(image_obs, size=(32, 32), mode='bilinear', align_corners=False)
+        # image_obs = torch.randn(self.num_envs, 3, 32, 32).to(self.device)
+        image_obs = self.camera.data.output["rgb"].float().permute(0, 3, 1, 2) / 255.0
+        image_obs = F.interpolate(
+            image_obs, size=(32, 32), mode="bilinear", align_corners=False
+        )
         image_obs = image_obs.reshape(self.num_envs, -1)
         state_obs = torch.cat(
             (
@@ -296,6 +295,7 @@ class SpotNavEnv(DirectRLEnv):
                 torch.sin(self.target_heading_error).unsqueeze(dim=1),
                 self._action_state[:, 0].unsqueeze(dim=1),
                 self._action_state[:, 1].unsqueeze(dim=1),
+                self._action_state[:, 2].unsqueeze(dim=1),
                 self._get_distance_to_walls().unsqueeze(dim=1),  # Add wall distance
             ),
             dim=-1,
@@ -360,7 +360,7 @@ class SpotNavEnv(DirectRLEnv):
                 self.sim.render()
             # update buffers at sim dt
             self.scene.update(dt=self.physics_dt)
-            # self.camera.update(dt=self.physics_dt)
+            self.camera.update(dt=self.physics_dt)
         # post-step:
         # -- update env counters (used for curriculum generation)
         self.episode_length_buf += 1  # step in current episode (per env)
@@ -642,7 +642,7 @@ class SpotNavEnv(DirectRLEnv):
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
-        # self.camera.reset(env_ids)
+        self.camera.reset(env_ids)
 
         num_reset = len(env_ids)
         default_state = self.robot.data.default_root_state[env_ids]

@@ -15,12 +15,12 @@ import torch.optim as optim
 import tqdm
 import wandb
 
-# Ensure Isaac Lab’s path is on sys.path so that `AppLauncher` resolves
+# Ensure Isaac Lab's path is on sys.path so that `AppLauncher` resolves
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from isaaclab.utils import configclass
 from isaaclab.utils.dict import print_dict
 from models import CNNPPOAgent, MLPPPOAgent
-from utils import seed_everything  # your existing seeding util
+from utils import load_args, seed_everything  # add load_args import
 
 # =============================================================================
 # 1. CONFIG CLASSES (copied/merged from original script)
@@ -159,7 +159,7 @@ def ddp_cleanup():
 
 def launch_app(args):
     """
-    Original launch_app: wraps Args into argparse.Namespace for Isaac Lab’s AppLauncher.
+    Original launch_app: wraps Args into argparse.Namespace for Isaac Lab's AppLauncher.
     Returns the simulation application handle.
     """
     from argparse import Namespace
@@ -171,14 +171,7 @@ def launch_app(args):
 
 
 def get_args():
-    """
-    Original get_args: merge ExperimentArgs and EnvArgs into a single Args dataclass.
-    """
-    exp_args = ExperimentArgs()
-    env_args = EnvArgs()
-    merged_args = {**asdict(exp_args), **asdict(env_args)}
-    args = Args(**merged_args)
-    return args
+    return load_args(Args)
 
 
 # =============================================================================
@@ -545,7 +538,7 @@ def main_worker(local_rank, args):
             and iteration % args.checkpoint_interval == 0
         ):
             ckpt_path = os.path.join(ckpt_dir, f"ckpt_{global_step}.pt")
-            # Save underlying module’s state_dict if distributed
+            # Save underlying module's state_dict if distributed
             to_save = (
                 local_agent.module.state_dict()
                 if args.distributed

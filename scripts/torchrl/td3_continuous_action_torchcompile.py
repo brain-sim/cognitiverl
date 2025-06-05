@@ -23,7 +23,7 @@ from tensordict.nn import CudaGraphModule
 from torchrl.data import LazyTensorStorage, TensorDictReplayBuffer
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from utils import seed_everything
+from utils import load_args, seed_everything
 
 ### TODO : Batch size (global) and transition batch size should be different.
 ### The current code only works if they are both the same.
@@ -116,11 +116,7 @@ def launch_app(args):
 
 
 def get_args():
-    exp_args = ExperimentArgs()
-    env_args = EnvArgs()
-    merged_args = {**asdict(exp_args), **asdict(env_args)}
-    args = Args(**merged_args)
-    return args
+    return load_args(Args)
 
 
 try:
