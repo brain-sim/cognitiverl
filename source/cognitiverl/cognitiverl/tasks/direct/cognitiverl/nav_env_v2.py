@@ -207,24 +207,26 @@ class NavEnv(DirectRLEnv):
         )
         self.camera = TiledCamera(camera_cfg)
 
-    def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        throttle_scale = self.cfg.throttle_scale
-        throttle_max = self.cfg.throttle_max
-        steering_scale = self.cfg.steering_scale
-        steering_max = self.cfg.steering_max
+        self.throttle_scale = self.cfg.throttle_scale
+        self.throttle_max = self.cfg.throttle_max
+        self.steering_scale = self.cfg.steering_scale
+        self.steering_max = self.cfg.steering_max
 
+    def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self._throttle_action = (
-            actions[:, 0].repeat_interleave(4).reshape((-1, 4)) * throttle_scale
+            actions[:, 0].repeat_interleave(4).reshape((-1, 4)) * self.throttle_scale
         )
-        self._throttle_action = torch.clamp(self._throttle_action, -1, throttle_max)
+        self._throttle_action = torch.clamp(
+            self._throttle_action, -1, self.throttle_max
+        )
         self.throttle_action = self._throttle_action.clone()
         self._throttle_state = self._throttle_action
 
         self._steering_action = (
-            actions[:, 1].repeat_interleave(2).reshape((-1, 2)) * steering_scale
+            actions[:, 1].repeat_interleave(2).reshape((-1, 2)) * self.steering_scale
         )
         self._steering_action = torch.clamp(
-            self._steering_action, -steering_max, steering_max
+            self._steering_action, -self.steering_max, self.steering_max
         )
         self._steering_state = self._steering_action
 

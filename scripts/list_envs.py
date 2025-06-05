@@ -44,7 +44,7 @@ def main():
     index = 0
     # acquire all Isaac environments names
     for task_spec in gym.registry.values():
-        if "CognitiveRL-" in task_spec.id:
+        if "Nav" in task_spec.id:
             # add details to table
             table.add_row(
                 [

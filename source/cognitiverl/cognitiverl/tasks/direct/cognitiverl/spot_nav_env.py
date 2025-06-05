@@ -9,21 +9,22 @@ from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
 from isaaclab.envs.common import VecEnvStepReturn
 from isaaclab.markers import VisualizationMarkers
-from isaaclab.sensors.camera import TiledCamera, TiledCameraCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
 from isaaclab.utils import math
 from isaacsim.core.api.materials import PhysicsMaterial
 from isaacsim.core.api.objects import FixedCuboid
 
-from .nav_env_cfg import NavEnvCfg
+from .spot_nav_env_cfg import SpotNavEnvCfg
+from .spot_policy_controller import SpotPolicyController  # Import the low-level policy
 
 
-class NavEnv(DirectRLEnv):
-    cfg: NavEnvCfg
+class SpotNavEnv(DirectRLEnv):
+    cfg: SpotNavEnvCfg
+    ACTION_SCALE = 0.2  # Scale for policy output (delta from default pose)
 
     def __init__(
         self,
-        cfg: NavEnvCfg,
+        cfg: SpotNavEnvCfg,
         render_mode: str | None = None,
         debug: bool = False,
         **kwargs,
@@ -32,13 +33,9 @@ class NavEnv(DirectRLEnv):
         self.room_size = 40.0  # Adjust as needed
 
         super().__init__(cfg, render_mode, **kwargs)
-        self._throttle_dof_idx, _ = self.robot.find_joints(self.cfg.throttle_dof_name)
-        self._steering_dof_idx, _ = self.robot.find_joints(self.cfg.steering_dof_name)
-        self._throttle_state = torch.zeros(
-            (self.num_envs, 4), device=self.device, dtype=torch.float32
-        )
-        self._steering_state = torch.zeros(
-            (self.num_envs, 2), device=self.device, dtype=torch.float32
+        self._dof_idx, _ = self.robot.find_joints(self.cfg.dof_name)
+        self._state = torch.zeros(
+            (self.num_envs, 8), device=self.device, dtype=torch.float32
         )
         self._goal_reached = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.int32
@@ -80,6 +77,24 @@ class NavEnv(DirectRLEnv):
         )  # Cap on accumulated laziness to prevent extreme penalties
 
         self._debug = debug
+
+        # --- Low-level Spot policy integration ---
+        # TODO: Set the correct path to your TorchScript policy file
+        policy_file_path = "/home/user/cognitiverl/source/cognitiverl/cognitiverl/tasks/direct/custom_assets/spot_policy.pt"  # <-- Set this to your actual policy file
+        self.policy = SpotPolicyController(policy_file_path)
+        # Buffers for previous action and default joint positions
+        self._previous_action = torch.zeros(
+            (self.num_envs, 12), device=self.device, dtype=torch.float32
+        )
+        self._default_pos = self.robot.data.default_joint_pos.clone()
+
+        self.action_scale = self.cfg.action_scale
+        self.action_max = self.cfg.action_max
+        self._action_state = torch.zeros(
+            (self.num_envs, self.cfg.action_space),
+            device=self.device,
+            dtype=torch.float32,
+        )
 
     def _setup_scene(self):
         # Create a large ground plane without grid
@@ -194,47 +209,60 @@ class NavEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-        camera_cfg = TiledCameraCfg(
-            prim_path="/World/envs/env_.*/Robot/Rigid_Bodies/Chassis/Camera_Left",
-            update_period=0.05,
-            height=32,
-            width=32,
-            data_types=["rgb"],
-            spawn=None,
-            offset=TiledCameraCfg.OffsetCfg(
-                pos=(0.0, 0.0, 0.0), rot=(1, 0, 0, 0), convention="ros"
-            ),
-        )
-        self.camera = TiledCamera(camera_cfg)
+        # camera_cfg = TiledCameraCfg(
+        #     prim_path="/World/envs/env_.*/Robot/Rigid_Bodies/Chassis/Camera_Left",
+        #     update_period=0.05,
+        #     height=32,
+        #     width=32,
+        #     data_types=["rgb"],
+        #     spawn=None,
+        #     offset=TiledCameraCfg.OffsetCfg(
+        #         pos=(0.0, 0.0, 0.0), rot=(1, 0, 0, 0), convention="ros"
+        #     ),
+        # )
+        # self.camera = TiledCamera(camera_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
-        throttle_scale = self.cfg.throttle_scale
-        throttle_max = self.cfg.throttle_max
-        steering_scale = self.cfg.steering_scale
-        steering_max = self.cfg.steering_max
-
-        self._throttle_action = (
-            actions[:, 0].repeat_interleave(4).reshape((-1, 4)) * throttle_scale
+        self._actions = torch.zeros(
+            (self.num_envs, 3), device=self.device, dtype=torch.float32
         )
-        self._throttle_action = torch.clamp(self._throttle_action, -1, throttle_max)
-        self.throttle_action = self._throttle_action.clone()
-        self._throttle_state = self._throttle_action
-
-        self._steering_action = (
-            actions[:, 1].repeat_interleave(2).reshape((-1, 2)) * steering_scale
+        self._actions[:, :2] = actions[:, :2].clone()
+        self._actions = self._actions * self.action_scale
+        self._actions = torch.nan_to_num(self._actions, 0.0)
+        self._actions = torch.clamp(
+            self._actions, min=-self.action_max, max=self.action_max
         )
-        self._steering_action = torch.clamp(
-            self._steering_action, -steering_max, steering_max
-        )
-        self._steering_state = self._steering_action
+        self._action_state = self._actions.clone()
 
     def _apply_action(self) -> None:
-        self.robot.set_joint_velocity_target(
-            self._throttle_action, joint_ids=self._throttle_dof_idx
+        # --- Vectorized low-level Spot policy call for all environments ---
+        # Gather all required robot state as torch tensors
+        # TODO: Replace the following with actual command logic per environment
+        previous_action = self._previous_action  # [num_envs, 12]
+        default_pos = self._default_pos  # [num_envs, 12]
+        # The following assumes your robot exposes these as torch tensors of shape [num_envs, ...]
+        lin_vel_I = self.robot.data.root_lin_vel_w  # [num_envs, 3]
+        ang_vel_I = self.robot.data.root_ang_vel_w  # [num_envs, 3]
+        q_IB = self.robot.data.root_quat_w  # [num_envs, 4]
+        joint_pos = self.robot.data.joint_pos  # [num_envs, 12]
+        joint_vel = self.robot.data.joint_vel  # [num_envs, 12]
+        # Compute actions for all environments
+        actions = self.policy.get_action(
+            lin_vel_I,
+            ang_vel_I,
+            q_IB,
+            self._actions,
+            previous_action,
+            default_pos,
+            joint_pos,
+            joint_vel,
         )
-        self.robot.set_joint_position_target(
-            self._steering_state, joint_ids=self._steering_dof_idx
-        )
+        # Update previous action buffer
+        self._previous_action = actions.detach()
+        # Scale and offset actions as in Spot reference policy
+        joint_positions = self._default_pos + actions * self.ACTION_SCALE
+        # Apply joint position targets directly
+        self.robot.set_joint_position_target(joint_positions)
 
     def _get_observations(self) -> dict:
         current_target_positions = self._target_positions[
@@ -256,7 +284,8 @@ class NavEnv(DirectRLEnv):
         self.target_heading_error = torch.atan2(
             torch.sin(target_heading_w - heading), torch.cos(target_heading_w - heading)
         )
-        image_obs = self.camera.data.output["rgb"].float().permute(0, 3, 1, 2) / 255.0
+        image_obs = torch.randn(self.num_envs, 3, 32, 32).to(self.device)
+        # self.camera.data.output["rgb"].float().permute(0, 3, 1, 2) / 255.0
         # image_obs = F.interpolate(image_obs, size=(32, 32), mode='bilinear', align_corners=False)
         image_obs = image_obs.reshape(self.num_envs, -1)
         state_obs = torch.cat(
@@ -265,8 +294,8 @@ class NavEnv(DirectRLEnv):
                 self._position_error.unsqueeze(dim=1),
                 torch.cos(self.target_heading_error).unsqueeze(dim=1),
                 torch.sin(self.target_heading_error).unsqueeze(dim=1),
-                self._throttle_state[:, 0].unsqueeze(dim=1),
-                self._steering_state[:, 0].unsqueeze(dim=1),
+                self._action_state[:, 0].unsqueeze(dim=1),
+                self._action_state[:, 1].unsqueeze(dim=1),
                 self._get_distance_to_walls().unsqueeze(dim=1),  # Add wall distance
             ),
             dim=-1,
@@ -331,7 +360,7 @@ class NavEnv(DirectRLEnv):
                 self.sim.render()
             # update buffers at sim dt
             self.scene.update(dt=self.physics_dt)
-            self.camera.update(dt=self.physics_dt)
+            # self.camera.update(dt=self.physics_dt)
         # post-step:
         # -- update env counters (used for curriculum generation)
         self.episode_length_buf += 1  # step in current episode (per env)
@@ -567,7 +596,7 @@ class NavEnv(DirectRLEnv):
 
         return composite_reward
 
-    def _check_vehicle_flipped(self) -> torch.Tensor:
+    def _check_robot_flipped(self) -> torch.Tensor:
         # Get robot's orientation
         robot_quat = (
             self.robot.data.root_quat_w
@@ -597,7 +626,7 @@ class NavEnv(DirectRLEnv):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         task_failed = self.episode_length_buf > self.max_episode_length
-        vehicle_flipped = self._check_vehicle_flipped()
+        vehicle_flipped = self._check_robot_flipped()
         task_failed |= vehicle_flipped
         debug_size = 5
         if self._debug:
@@ -613,7 +642,7 @@ class NavEnv(DirectRLEnv):
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
-        self.camera.reset(env_ids)
+        # self.camera.reset(env_ids)
 
         num_reset = len(env_ids)
         default_state = self.robot.data.default_root_state[env_ids]
