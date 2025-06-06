@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Sequence
 
 import isaaclab.sim as sim_utils
 import numpy as np
 import torch
+import torch.nn.functional as F
+import torchvision
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
 from isaaclab.envs.common import VecEnvStepReturn
 from isaaclab.markers import VisualizationMarkers
+from isaaclab.sensors.camera import TiledCamera, TiledCameraCfg
 from isaaclab.sim.spawners.from_files import GroundPlaneCfg, spawn_ground_plane
+from isaaclab.sim.spawners.sensors.sensors_cfg import PinholeCameraCfg
 from isaaclab.utils import math
 from isaacsim.core.api.materials import PhysicsMaterial
 from isaacsim.core.api.objects import FixedCuboid
@@ -95,6 +100,7 @@ class SpotNavEnv(DirectRLEnv):
             device=self.device,
             dtype=torch.float32,
         )
+        os.makedirs("logs", exist_ok=True)
 
     def _setup_scene(self):
         # Create a large ground plane without grid
@@ -115,6 +121,29 @@ class SpotNavEnv(DirectRLEnv):
 
         # Setup rest of the scene
         self.robot = Articulation(self.cfg.robot_cfg)
+        camera_prim_path = "/World/envs/env_.*/Robot/body/Camera"
+        pinhole_cfg = PinholeCameraCfg(
+            focal_length=16.0,
+            horizontal_aperture=32.0,
+            vertical_aperture=32.0,
+            focus_distance=1.0,
+            clipping_range=(0.01, 1000.0),
+            lock_camera=True,
+        )
+        camera_cfg = TiledCameraCfg(
+            prim_path=camera_prim_path,
+            update_period=0.0025,
+            height=96,
+            width=96,
+            data_types=["rgb"],
+            spawn=pinhole_cfg,
+            offset=TiledCameraCfg.OffsetCfg(
+                pos=(0.25, 0.0, 0.25),  # At the head, adjust as needed
+                rot=(0.5, -0.5, 0.5, -0.5),
+                convention="ros",
+            ),
+        )
+        self.camera = TiledCamera(camera_cfg)
         self.waypoints = VisualizationMarkers(self.cfg.waypoint_cfg)
         self.object_state = []
 
@@ -209,19 +238,6 @@ class SpotNavEnv(DirectRLEnv):
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
 
-        camera_cfg = TiledCameraCfg(
-            prim_path="/World/envs/env_.*/Robot/Camera",
-            update_period=0.05,
-            height=32,
-            width=32,
-            data_types=["rgb"],
-            spawn=None,
-            offset=TiledCameraCfg.OffsetCfg(
-                pos=(0.0, 0.0, 0.0), rot=(1, 0, 0, 0), convention="ros"
-            ),
-        )
-        self.camera = TiledCamera(camera_cfg)
-
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
         self._actions = actions.clone()
         self._actions = self._actions * self.action_scale
@@ -283,6 +299,8 @@ class SpotNavEnv(DirectRLEnv):
         )
         # image_obs = torch.randn(self.num_envs, 3, 32, 32).to(self.device)
         image_obs = self.camera.data.output["rgb"].float().permute(0, 3, 1, 2) / 255.0
+        save_image_grid = torchvision.utils.make_grid(image_obs, nrow=self.num_envs)
+        torchvision.utils.save_image(save_image_grid, "logs/image_grid.png")
         image_obs = F.interpolate(
             image_obs, size=(32, 32), mode="bilinear", align_corners=False
         )

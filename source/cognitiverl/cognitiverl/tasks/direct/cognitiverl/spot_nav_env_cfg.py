@@ -31,7 +31,6 @@ class SpotNavEnvCfg(DirectRLEnvCfg):
     )  # dt=1/250
     robot_cfg: ArticulationCfg = SPOT_CFG.replace(
         prim_path="/World/envs/env_.*/Robot",
-        # spawn=SPOT_CFG.spawn.replace(scale=(0.03, 0.03, 0.03)),  # 3D vector for scaling
     )
 
     waypoint_cfg = WAYPOINT_CFG

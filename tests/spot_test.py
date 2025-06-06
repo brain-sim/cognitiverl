@@ -20,6 +20,7 @@ import argparse
 
 import gymnasium as gym
 import torch
+import tqdm
 from isaaclab.app import AppLauncher
 
 """Rest everything follows."""
@@ -93,9 +94,12 @@ def main():
     )()
     print("[INFO]: Environment Spot Nav has been created.")
     obs, _ = env.reset()
-    for i in range(1000):
+    for i in tqdm.trange(1000):
         action = torch.from_numpy(env.action_space.sample())
         env.step(action)
+        if i % 200 == 0:
+            env.reset()
+    env.close()
 
 
 if __name__ == "__main__":
