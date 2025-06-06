@@ -45,8 +45,9 @@ def _dataclass_to_argparse(parser, dataclass_type, prefix="", defaults=None):
     Add arguments to parser from dataclass fields. Optionally use a prefix for nested dataclasses.
     """
     for f in fields(dataclass_type):
-        arg_name = f"--{prefix}{f.name}".replace("_", "-")
+        arg_name = f"--{prefix}{f.name}"
         arg_type = f.type
+        print(prefix, f.name, arg_name)
         default = getattr(defaults, f.name) if defaults is not None else f.default
         # Handle bools as store_true/store_false
         if arg_type is bool:
@@ -104,7 +105,7 @@ def load_args(ArgsClass, yaml_path=None, cli_args=None):
         "--config", type=str, default=None, help="Path to YAML config file."
     )
     _dataclass_to_argparse(parser, ArgsClass, defaults=default_args)
-    args_ns = parser.parse_args(cli_args)
+    args_ns, unknown = parser.parse_known_args(cli_args)
     cli_dict = vars(args_ns)
     config_from_cli = cli_dict.pop("config", None)
     # If --config is given on CLI, reload YAML and update again

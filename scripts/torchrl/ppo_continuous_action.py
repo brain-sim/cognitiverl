@@ -26,7 +26,7 @@ class EnvArgs:
     """the id of the environment"""
     env_cfg_entry_point: str = "env_cfg_entry_point"
     """the entry point of the environment configuration"""
-    num_envs: int = 64
+    num_envs: int = 512
     """the number of parallel environments to simulate"""
     seed: int = 1
     """seed of the environment"""
@@ -44,7 +44,7 @@ class EnvArgs:
     """run training with multiple GPUs or nodes"""
     headless: bool = False
     """run training in headless mode"""
-    enable_cameras: bool = True
+    enable_cameras: bool = False
     """enable cameras to record sensor inputs."""
 
 
