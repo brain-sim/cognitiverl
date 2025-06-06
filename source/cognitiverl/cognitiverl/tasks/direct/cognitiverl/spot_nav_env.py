@@ -5,7 +5,6 @@ from collections.abc import Sequence
 import isaaclab.sim as sim_utils
 import numpy as np
 import torch
-import torch.nn.functional as F
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
 from isaaclab.envs.common import VecEnvStepReturn
@@ -294,11 +293,10 @@ class SpotNavEnv(DirectRLEnv):
         self.target_heading_error = torch.atan2(
             torch.sin(target_heading_w - heading), torch.cos(target_heading_w - heading)
         )
-        # image_obs = torch.randn(self.num_envs, 3, 32, 32).to(self.device)
         image_obs = self.camera.data.output["rgb"].float().permute(0, 3, 1, 2) / 255.0
-        image_obs = F.interpolate(
-            image_obs, size=(32, 32), mode="bilinear", align_corners=False
-        )
+        # image_obs = F.interpolate(
+        #     image_obs, size=(32, 32), mode="bilinear", align_corners=False
+        # )
         image_obs = image_obs.reshape(self.num_envs, -1)
         state_obs = torch.cat(
             (
