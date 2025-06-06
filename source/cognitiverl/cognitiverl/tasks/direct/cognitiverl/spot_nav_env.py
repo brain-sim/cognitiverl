@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import os
 from collections.abc import Sequence
 
 import isaaclab.sim as sim_utils
 import numpy as np
 import torch
 import torch.nn.functional as F
-import torchvision
 from isaaclab.assets import Articulation
 from isaaclab.envs import DirectRLEnv
 from isaaclab.envs.common import VecEnvStepReturn
@@ -100,7 +98,6 @@ class SpotNavEnv(DirectRLEnv):
             device=self.device,
             dtype=torch.float32,
         )
-        os.makedirs("logs", exist_ok=True)
 
     def _setup_scene(self):
         # Create a large ground plane without grid
@@ -133,8 +130,8 @@ class SpotNavEnv(DirectRLEnv):
         camera_cfg = TiledCameraCfg(
             prim_path=camera_prim_path,
             update_period=0.0025,
-            height=96,
-            width=96,
+            height=32,
+            width=32,
             data_types=["rgb"],
             spawn=pinhole_cfg,
             offset=TiledCameraCfg.OffsetCfg(
@@ -299,8 +296,6 @@ class SpotNavEnv(DirectRLEnv):
         )
         # image_obs = torch.randn(self.num_envs, 3, 32, 32).to(self.device)
         image_obs = self.camera.data.output["rgb"].float().permute(0, 3, 1, 2) / 255.0
-        save_image_grid = torchvision.utils.make_grid(image_obs, nrow=self.num_envs)
-        torchvision.utils.save_image(save_image_grid, "logs/image_grid.png")
         image_obs = F.interpolate(
             image_obs, size=(32, 32), mode="bilinear", align_corners=False
         )
