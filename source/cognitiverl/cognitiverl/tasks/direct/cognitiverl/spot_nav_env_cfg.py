@@ -16,9 +16,10 @@ from .waypoint import WAYPOINT_CFG
 @configclass
 class SpotNavEnvCfg(DirectRLEnvCfg):
     decimation = 3  # 2
-    episode_length_s = 30.0
+    episode_length_s = 20.0
     action_space = 3
-    observation_space = 3079  # Changed from 8 to 9 to include minimum wall distance
+    observation_space = 3076  # Changed from 8 to 9 to include minimum wall distance
+
     """
     observation_space = {
         "state": 6,
@@ -27,7 +28,7 @@ class SpotNavEnvCfg(DirectRLEnvCfg):
     """
     state_space = 0
     sim: SimulationCfg = SimulationCfg(
-        dt=1 / 400, render_interval=decimation
+        dt=1 / 250, render_interval=decimation
     )  # dt=1/250
     robot_cfg: ArticulationCfg = SPOT_CFG.replace(
         prim_path="/World/envs/env_.*/Robot",
@@ -50,27 +51,36 @@ class SpotNavEnvCfg(DirectRLEnvCfg):
         "hr_kn",
     ]
 
+    # Scene
     env_spacing = 40.0
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=4096, env_spacing=env_spacing, replicate_physics=True
     )
 
+    # Scene Properties
+    room_size = 20.0
     num_goals = 10
+    wall_thickness = 5.0
+    wall_height = 3.0
 
     course_length_coefficient = 2.5
     course_width_coefficient = 2.0
-    position_tolerance = 0.15
-    goal_reached_bonus = 10.0
-    position_progress_weight = 1.0
-    heading_coefficient = 0.25
-    heading_progress_weight = 0.05
+    position_tolerance = waypoint_cfg.markers["marker1"].radius
 
+    # Reward Coefficients
+    goal_reached_bonus = 10.0
+    position_progress_weight = 3.0
+    heading_progress_weight = 0.5
+    wall_penalty_weight = 1.0
+    linear_speed_weight = 0.05
+    laziness_penalty_weight = 1.0
+    heading_coefficient = 0.25
+
+    # Action Scaling
     action_scale = 3.0
     action_max = 3.0
 
+    # Laziness
     laziness_decay = 0.95
-    laziness_threshold = 0.5
+    laziness_threshold = 1.0
     max_laziness = 10.0
-
-    wall_thickness = 2.0
-    wall_height = 3.0

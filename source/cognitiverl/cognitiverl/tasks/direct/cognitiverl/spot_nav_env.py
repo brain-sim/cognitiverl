@@ -31,10 +31,10 @@ class SpotNavEnv(DirectRLEnv):
         debug: bool = False,
         **kwargs,
     ):
-        # Add room size as a class attribute
-        self.room_size = 40.0  # Adjust as needed
-
+        self.room_size = getattr(cfg, "room_size", 10.0)
+        self._num_goals = getattr(cfg, "num_goals", 1)
         super().__init__(cfg, render_mode, **kwargs)
+        # Add room size as a class attribute
         self._dof_idx, _ = self.robot.find_joints(self.cfg.dof_name)
         self._state = torch.zeros(
             (self.num_envs, 8), device=self.device, dtype=torch.float32
@@ -45,7 +45,6 @@ class SpotNavEnv(DirectRLEnv):
         self.task_completed = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.bool
         )
-        self._num_goals = 10
         self._target_positions = torch.zeros(
             (self.num_envs, self._num_goals, 2), device=self.device, dtype=torch.float32
         )
@@ -57,9 +56,10 @@ class SpotNavEnv(DirectRLEnv):
         self.course_width_coefficient = self.cfg.course_width_coefficient
         self.position_tolerance = self.cfg.position_tolerance
         self.goal_reached_bonus = self.cfg.goal_reached_bonus
-        self.position_progress_weight = self.cfg.position_progress_weight
-        self.heading_coefficient = self.cfg.heading_coefficient
         self.heading_progress_weight = self.cfg.heading_progress_weight
+        self.heading_coefficient = self.cfg.heading_coefficient
+        self.laziness_penalty_weight = self.cfg.laziness_penalty_weight
+        self.position_progress_weight = self.cfg.position_progress_weight
         self._target_index = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.int32
         )
@@ -77,6 +77,8 @@ class SpotNavEnv(DirectRLEnv):
         self.max_laziness = (
             self.cfg.max_laziness
         )  # Cap on accumulated laziness to prevent extreme penalties
+        self.wall_penalty_weight = self.cfg.wall_penalty_weight
+        self.linear_speed_weight = self.cfg.linear_speed_weight
 
         self._debug = debug
 
@@ -152,10 +154,9 @@ class SpotNavEnv(DirectRLEnv):
         import numpy as np
 
         # Define wall properties
-        wall_thickness = self.cfg.wall_thickness
-        wall_height = self.cfg.wall_height
-        wall_position = self.room_size / 2
-        self.wall_thickness = wall_thickness
+        self.wall_thickness = self.cfg.wall_thickness
+        self.wall_height = self.cfg.wall_height
+        self.wall_position = self.room_size - self.wall_thickness
 
         # Create physics material for walls
         PhysicsMaterial(
@@ -179,10 +180,18 @@ class SpotNavEnv(DirectRLEnv):
             FixedCuboid(
                 prim_path=f"/World/envs/{env_name}/walls/north_wall",
                 position=np.array(
-                    [origin_cpu[0], origin_cpu[1] + wall_position, wall_height / 2]
+                    [
+                        origin_cpu[0],
+                        origin_cpu[1] + self.wall_position,
+                        self.wall_height / 2,
+                    ]
                 ),
                 scale=np.array(
-                    [self.room_size + wall_thickness, wall_thickness, wall_height]
+                    [
+                        self.room_size + self.wall_thickness,
+                        self.wall_thickness,
+                        self.wall_height,
+                    ]
                 ),
                 color=np.array([0.2, 0.3, 0.8]),
             )
@@ -193,10 +202,18 @@ class SpotNavEnv(DirectRLEnv):
             FixedCuboid(
                 prim_path=f"/World/envs/{env_name}/walls/south_wall",
                 position=np.array(
-                    [origin_cpu[0], origin_cpu[1] - wall_position, wall_height / 2]
+                    [
+                        origin_cpu[0],
+                        origin_cpu[1] - self.wall_position,
+                        self.wall_height / 2,
+                    ]
                 ),
                 scale=np.array(
-                    [self.room_size + wall_thickness, wall_thickness, wall_height]
+                    [
+                        self.room_size + self.wall_thickness,
+                        self.wall_thickness,
+                        self.wall_height,
+                    ]
                 ),
                 color=np.array([0.2, 0.3, 0.8]),
             )
@@ -207,10 +224,18 @@ class SpotNavEnv(DirectRLEnv):
             FixedCuboid(
                 prim_path=f"/World/envs/{env_name}/walls/east_wall",
                 position=np.array(
-                    [origin_cpu[0] + wall_position, origin_cpu[1], wall_height / 2]
+                    [
+                        origin_cpu[0] + self.wall_position,
+                        origin_cpu[1],
+                        self.wall_height / 2,
+                    ]
                 ),
                 scale=np.array(
-                    [wall_thickness, self.room_size + wall_thickness, wall_height]
+                    [
+                        self.wall_thickness,
+                        self.room_size + self.wall_thickness,
+                        self.wall_height,
+                    ]
                 ),
                 color=np.array([0.2, 0.3, 0.8]),
             )
@@ -221,10 +246,18 @@ class SpotNavEnv(DirectRLEnv):
             FixedCuboid(
                 prim_path=f"/World/envs/{env_name}/walls/west_wall",
                 position=np.array(
-                    [origin_cpu[0] - wall_position, origin_cpu[1], wall_height / 2]
+                    [
+                        origin_cpu[0] - self.wall_position,
+                        origin_cpu[1],
+                        self.wall_height / 2,
+                    ]
                 ),
                 scale=np.array(
-                    [wall_thickness, self.room_size + wall_thickness, wall_height]
+                    [
+                        self.wall_thickness,
+                        self.room_size + self.wall_thickness,
+                        self.wall_height,
+                    ]
                 ),
                 color=np.array([0.2, 0.3, 0.8]),
             )
@@ -301,9 +334,9 @@ class SpotNavEnv(DirectRLEnv):
         state_obs = torch.cat(
             (
                 image_obs,
-                self._position_error.unsqueeze(dim=1),
-                torch.cos(self.target_heading_error).unsqueeze(dim=1),
-                torch.sin(self.target_heading_error).unsqueeze(dim=1),
+                # self._position_error.unsqueeze(dim=1),
+                # torch.cos(self.target_heading_error).unsqueeze(dim=1),
+                # torch.sin(self.target_heading_error).unsqueeze(dim=1),
                 self._action_state[:, 0].unsqueeze(dim=1),
                 self._action_state[:, 1].unsqueeze(dim=1),
                 self._action_state[:, 2].unsqueeze(dim=1),
@@ -338,7 +371,11 @@ class SpotNavEnv(DirectRLEnv):
             action: The actions to apply on the environment. Shape is (num_envs, action_dim).
 
         Returns:
-            A tuple containing the observations, rewards, resets (terminated and truncated) and extras.
+            A tuple containing the observations, rewards, resets (terminated and
+            truncated) and extras.
+
+        Raises:
+            ValueError: If the observations contain NaNs.
         """
         action = action.to(self.device)
         # add action noise
@@ -492,11 +529,29 @@ class SpotNavEnv(DirectRLEnv):
             )
 
     def _get_rewards(self) -> torch.Tensor:
-        position_progress_rew = self._previous_position_error - self._position_error
-        target_heading_rew = torch.exp(
-            -torch.abs(self.target_heading_error) / self.heading_coefficient
-        )
+        # position_progress_reward = (
+        #     torch.nan_to_num(
+        #         self._previous_position_error - self._position_error,
+        #         posinf=0.0,
+        #         neginf=0.0,
+        #     )
+        #     * self.position_progress_weight
+        # )
+        # target_heading_reward = self.heading_progress_weight * torch.nan_to_num(
+        #     torch.exp(-torch.abs(self.target_heading_error) / self.heading_coefficient),
+        #     posinf=0.0,
+        #     neginf=0.0,
+        # )
         goal_reached = self._position_error < self.position_tolerance
+        goal_reached_reward = self.goal_reached_bonus * torch.nan_to_num(
+            torch.where(
+                goal_reached,
+                1.0,
+                torch.zeros_like(self._position_error),
+            ),
+            posinf=0.0,
+            neginf=0.0,
+        )
         self._target_index = self._target_index + goal_reached
         self.task_completed = self._target_index > (self._num_goals - 1)
         self._target_index = self._target_index % self._num_goals
@@ -528,8 +583,10 @@ class SpotNavEnv(DirectRLEnv):
         )
 
         # Calculate laziness penalty using log
-        laziness_penalty = -0.3 * torch.log1p(
-            self._accumulated_laziness
+        laziness_penalty = torch.nan_to_num(
+            -self.laziness_penalty_weight * torch.log1p(self._accumulated_laziness),
+            posinf=0.0,
+            neginf=0.0,
         )  # log1p(x) = log(1 + x)
 
         # Debug print
@@ -552,33 +609,42 @@ class SpotNavEnv(DirectRLEnv):
         # Add wall distance penalty
         min_wall_dist = self._get_distance_to_walls()
         danger_distance = (
-            self.wall_thickness / 2 + 5.0
+            self.wall_thickness / 2 + 2.0
         )  # Distance at which to start penalizing
-        wall_penalty = torch.where(
-            min_wall_dist > danger_distance,
-            torch.zeros_like(min_wall_dist),
-            -0.2
-            * torch.exp(1.0 - min_wall_dist / danger_distance),  # Exponential penalty
+        wall_penalty = torch.nan_to_num(
+            torch.where(
+                min_wall_dist > danger_distance,
+                torch.zeros_like(min_wall_dist),
+                -self.wall_penalty_weight
+                * torch.exp(
+                    1.0 - min_wall_dist / danger_distance
+                ),  # Exponential penalty
+            ),
+            posinf=0.0,
+            neginf=0.0,
+        )
+        linear_speed_reward = self.linear_speed_weight * torch.nan_to_num(
+            linear_speed / (self.target_heading_error + 1e-8),
+            posinf=0.0,
+            neginf=0.0,
         )
 
         composite_reward = (
-            # position_progress_rew * self.position_progress_weight +
-            torch.nan_to_num(position_progress_rew, posinf=0.0, neginf=0.0) * 3
-            + torch.nan_to_num(target_heading_rew, posinf=0.0, neginf=0.0) * 0.5
-            + torch.nan_to_num(
-                goal_reached * self.goal_reached_bonus, posinf=0.0, neginf=0.0
-            )
-            + torch.nan_to_num(
-                linear_speed / (self.target_heading_error + 1e-8),
-                posinf=0.0,
-                neginf=0.0,
-            )
-            * 0.05
-            + torch.nan_to_num(
-                laziness_penalty, posinf=0.0, neginf=0.0
-            )  # Updated laziness penalty
-            + torch.nan_to_num(wall_penalty, posinf=0.0, neginf=0.0)
+            goal_reached_reward + linear_speed_reward + laziness_penalty + wall_penalty
+            # + position_progress_reward
+            # + target_heading_reward
         )
+
+        if self._debug and self._debug_counter % 100 == 0:
+            print("=" * 100)
+            print(f"Goal reached: {goal_reached[0].item()}")
+            print(f"Goal Reward: {goal_reached_reward[0].item()}")
+            # print(f"Position progress reward: {position_progress_reward[0].item()}")
+            # print(f"Target heading reward: {target_heading_reward[0].item()}")
+            print(f"Linear speed reward: {linear_speed[0].item()}")
+            print(f"Laziness penalty: {laziness_penalty[0].item()}")
+            print(f"Wall penalty: {wall_penalty[0].item()}")
+            print("=" * 100)
 
         # Create a tensor of 0s (future), 1s (current), and 2s (completed)
         marker_indices = torch.zeros(
@@ -591,10 +657,18 @@ class SpotNavEnv(DirectRLEnv):
         ] = 1
 
         # Set completed targets to 2 (invisible)
-        for env_idx in range(self.num_envs):
-            target_idx = self._target_index[env_idx].item()
-            if target_idx > 0:  # If we've passed at least one waypoint
-                marker_indices[env_idx, :target_idx] = 2
+        # Create a mask for completed targets
+        target_mask = (self._target_index.unsqueeze(1) > 0) & (
+            torch.arange(self._num_goals, device=self.device)
+            < self._target_index.unsqueeze(1)
+        )
+        marker_indices[target_mask] = 2
+
+        # Original implementation:
+        # for env_idx in range(self.num_envs):
+        #     target_idx = self._target_index[env_idx].item()
+        #     if target_idx > 0:  # If we've passed at least one waypoint
+        #         marker_indices[env_idx, :target_idx] = 2
 
         # Flatten and convert to list
         marker_indices = marker_indices.view(-1).tolist()
@@ -666,19 +740,16 @@ class SpotNavEnv(DirectRLEnv):
 
         # CHANGE: Set car position to be randomly inside the room rather than outside of it
         # Use smaller margins to keep car away from walls
-        room_margin = 10.0  # keep the larger car away from walls
-        safe_room_size = self.room_size - room_margin * 2
+        safe_room_size = self.room_size // 2
 
         # Random position inside the room with margin
         robot_pose[:, 0] += (
             torch.rand(num_reset, dtype=torch.float32, device=self.device)
             * safe_room_size
-            - safe_room_size / 2
         )
         robot_pose[:, 1] += (
             torch.rand(num_reset, dtype=torch.float32, device=self.device)
             * safe_room_size
-            - safe_room_size / 2
         )
 
         # Keep random rotation for variety
@@ -698,21 +769,23 @@ class SpotNavEnv(DirectRLEnv):
 
         self._target_positions[env_ids, :, :] = 0.0
         self._markers_pos[env_ids, :, :] = 0.0
-
-        # Define square room size
-        room_size = (
-            20.0  # Size of the square room (20x20 units) for producing target_positions
-        )
-
         # Generate random positions within the square room
         for i in range(self._num_goals):
             # Random positions within the square
+
             self._target_positions[env_ids, i, 0] = (
-                torch.rand(num_reset, device=self.device) * room_size - room_size / 2
+                (2 * torch.rand(num_reset, device=self.device) - 1) * self.room_size / 2
+            ).clip(
+                min=-self.room_size + self.wall_thickness + self.cfg.position_tolerance,
+                max=self.room_size - self.wall_thickness - self.cfg.position_tolerance,
             )
             self._target_positions[env_ids, i, 1] = (
-                torch.rand(num_reset, device=self.device) * room_size - room_size / 2
+                (2 * torch.rand(num_reset, device=self.device) - 1) * self.room_size / 2
+            ).clip(
+                min=-self.room_size + self.wall_thickness + self.cfg.position_tolerance,
+                max=self.room_size - self.wall_thickness - self.cfg.position_tolerance,
             )
+            print(f"Target positions: {self._target_positions[env_ids, i, :2]}")
 
         # Offset by environment origins
         self._target_positions[env_ids, :] += self.scene.env_origins[

@@ -430,6 +430,9 @@ def main(args):
                     "values": values.mean(),
                     "returns_max": max_ep_ret,
                     "gn": gn,
+                    "explained_var": explained_var,
+                    "old_approx_kl": old_approx_kl,
+                    "approx_kl": approx_kl,
                 }
             wandb.log(
                 {

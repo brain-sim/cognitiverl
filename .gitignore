@@ -58,6 +58,7 @@ _build
 **/runs/*
 **/logs/*
 **/recordings/*
+**/wandb/*
 
 # Pre-Trained Checkpoints
 /.pretrained_checkpoints/

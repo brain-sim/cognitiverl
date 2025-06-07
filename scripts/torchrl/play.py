@@ -43,9 +43,9 @@ class EnvArgs:
     """disable fabric and use USD I/O operations"""
     distributed: bool = False
     """run training with multiple GPUs or nodes"""
-    headless: bool = True
+    headless: bool = False
     """run training in headless mode"""
-    enable_cameras: bool = True
+    enable_cameras: bool = False
     """enable cameras to record sensor inputs."""
 
 
@@ -64,7 +64,7 @@ class ExperimentArgs:
     """number of environments to run for evaluation/play."""
     num_eval_env_steps: int = 50
     """number of steps to run for evaluation/play."""
-    agent = CNNPPOAgent
+    agent: str = "CNNPPOAgent"
 
 
 @configclass
@@ -164,6 +164,19 @@ def main(args):
         "only continuous action space is supported"
     )
 
+    AGENT_LOOKUP = {
+        "CNNPPOAgent": CNNPPOAgent,
+    }
+
+    agent_class = AGENT_LOOKUP[args.agent]
+    agent = agent_class(n_obs, n_act)
+    agent.load_state_dict(torch.load(args.checkpoint_path))
+    device = (
+        torch.device(args.device) if torch.cuda.is_available() else torch.device("cpu")
+    )
+    agent.to(device)
+    agent.eval()
+
     @torch.no_grad()
     def run_play(play_agent, mode="play"):
         play_agent.eval()
@@ -199,13 +212,6 @@ def main(args):
                 step=global_step,
             )
 
-    agent = args.agent(n_obs, n_act)
-    agent.load_state_dict(torch.load(args.checkpoint_path))
-    device = (
-        torch.device(args.device) if torch.cuda.is_available() else torch.device("cpu")
-    )
-    agent.to(device)
-    agent.eval()
     run_play(agent)
     wandb.finish()
 

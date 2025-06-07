@@ -264,9 +264,9 @@ class NavEnv(DirectRLEnv):
         state_obs = torch.cat(
             (
                 image_obs,
-                self._position_error.unsqueeze(dim=1),
-                torch.cos(self.target_heading_error).unsqueeze(dim=1),
-                torch.sin(self.target_heading_error).unsqueeze(dim=1),
+                # self._position_error.unsqueeze(dim=1),
+                # torch.cos(self.target_heading_error).unsqueeze(dim=1),
+                # torch.sin(self.target_heading_error).unsqueeze(dim=1),
                 self._throttle_state[:, 0].unsqueeze(dim=1),
                 self._steering_state[:, 0].unsqueeze(dim=1),
                 self._get_distance_to_walls().unsqueeze(dim=1),  # Add wall distance
