@@ -28,8 +28,9 @@ class NavEnv(DirectRLEnv):
         debug: bool = False,
         **kwargs,
     ):
-        # Add room size as a class attribute
-        self.room_size = 40.0  # Adjust as needed
+        # Add room size as a class attribut
+        self.room_size = getattr(cfg, "room_size", 10.0)
+        self._num_goals = getattr(cfg, "num_goals", 1)
 
         super().__init__(cfg, render_mode, **kwargs)
         self._throttle_dof_idx, _ = self.robot.find_joints(self.cfg.throttle_dof_name)
@@ -115,10 +116,9 @@ class NavEnv(DirectRLEnv):
         import numpy as np
 
         # Define wall properties
-        wall_thickness = self.cfg.wall_thickness
-        wall_height = self.cfg.wall_height
-        wall_position = self.room_size / 2
-        self.wall_thickness = wall_thickness
+        self.wall_thickness = self.cfg.wall_thickness
+        self.wall_height = self.cfg.wall_height
+        self.wall_position = self.room_size - self.wall_thickness
 
         # Create physics material for walls
         PhysicsMaterial(
@@ -142,10 +142,18 @@ class NavEnv(DirectRLEnv):
             FixedCuboid(
                 prim_path=f"/World/envs/{env_name}/walls/north_wall",
                 position=np.array(
-                    [origin_cpu[0], origin_cpu[1] + wall_position, wall_height / 2]
+                    [
+                        origin_cpu[0],
+                        origin_cpu[1] + self.wall_position,
+                        self.wall_height / 2,
+                    ]
                 ),
                 scale=np.array(
-                    [self.room_size + wall_thickness, wall_thickness, wall_height]
+                    [
+                        self.room_size + self.wall_thickness,
+                        self.wall_thickness,
+                        self.wall_height,
+                    ]
                 ),
                 color=np.array([0.2, 0.3, 0.8]),
             )
@@ -156,10 +164,18 @@ class NavEnv(DirectRLEnv):
             FixedCuboid(
                 prim_path=f"/World/envs/{env_name}/walls/south_wall",
                 position=np.array(
-                    [origin_cpu[0], origin_cpu[1] - wall_position, wall_height / 2]
+                    [
+                        origin_cpu[0],
+                        origin_cpu[1] - self.wall_position,
+                        self.wall_height / 2,
+                    ]
                 ),
                 scale=np.array(
-                    [self.room_size + wall_thickness, wall_thickness, wall_height]
+                    [
+                        self.room_size + self.wall_thickness,
+                        self.wall_thickness,
+                        self.wall_height,
+                    ]
                 ),
                 color=np.array([0.2, 0.3, 0.8]),
             )
@@ -170,10 +186,18 @@ class NavEnv(DirectRLEnv):
             FixedCuboid(
                 prim_path=f"/World/envs/{env_name}/walls/east_wall",
                 position=np.array(
-                    [origin_cpu[0] + wall_position, origin_cpu[1], wall_height / 2]
+                    [
+                        origin_cpu[0] + self.wall_position,
+                        origin_cpu[1],
+                        self.wall_height / 2,
+                    ]
                 ),
                 scale=np.array(
-                    [wall_thickness, self.room_size + wall_thickness, wall_height]
+                    [
+                        self.wall_thickness,
+                        self.room_size + self.wall_thickness,
+                        self.wall_height,
+                    ]
                 ),
                 color=np.array([0.2, 0.3, 0.8]),
             )
@@ -184,10 +208,18 @@ class NavEnv(DirectRLEnv):
             FixedCuboid(
                 prim_path=f"/World/envs/{env_name}/walls/west_wall",
                 position=np.array(
-                    [origin_cpu[0] - wall_position, origin_cpu[1], wall_height / 2]
+                    [
+                        origin_cpu[0] - self.wall_position,
+                        origin_cpu[1],
+                        self.wall_height / 2,
+                    ]
                 ),
                 scale=np.array(
-                    [wall_thickness, self.room_size + wall_thickness, wall_height]
+                    [
+                        self.wall_thickness,
+                        self.room_size + self.wall_thickness,
+                        self.wall_height,
+                    ]
                 ),
                 color=np.array([0.2, 0.3, 0.8]),
             )
