@@ -16,7 +16,7 @@ from . import agents
 ##
 
 gym.register(
-    id="CognitiveRL-Nav-v0",
+    id="Leatherback-Nav-v0",
     entry_point=f"{__name__}.nav_env_v0:NavEnv",
     disable_env_checker=True,
     kwargs={
@@ -26,7 +26,7 @@ gym.register(
 )
 
 gym.register(
-    id="CognitiveRL-Nav-v1",
+    id="Leatherback-Nav-v1",
     entry_point=f"{__name__}.nav_env_v1:NavEnv",
     disable_env_checker=True,
     kwargs={
@@ -36,7 +36,7 @@ gym.register(
 )
 
 gym.register(
-    id="CognitiveRL-Nav-v2",
+    id="Leatherback-Nav-v2",
     entry_point=f"{__name__}.nav_env_v2:NavEnv",
     disable_env_checker=True,
     kwargs={
@@ -46,7 +46,7 @@ gym.register(
 )
 
 gym.register(
-    id="CognitiveRL-Nav-v3",
+    id="Leatherback-Nav-v3",
     entry_point=f"{__name__}.nav_env_v3:NavEnv",
     disable_env_checker=True,
     kwargs={

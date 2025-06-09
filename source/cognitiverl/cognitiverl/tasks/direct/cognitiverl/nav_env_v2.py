@@ -590,14 +590,6 @@ class NavEnv(DirectRLEnv):
             goal_reached_reward + linear_speed_reward + laziness_penalty + wall_penalty
         )
 
-        print("=" * 30)
-        print(f"Reward: {composite_reward}")
-        print(f"goal_reached_reward: {goal_reached_reward}")
-        print(f"linear_speed_reward: {linear_speed_reward}")
-        print(f"laziness_penalty: {laziness_penalty}")
-        print(f"wall_penalty: {wall_penalty}")
-        print("=" * 30)
-
         # Create a tensor of 0s (future), 1s (current), and 2s (completed)
         marker_indices = torch.zeros(
             (self.num_envs, self._num_goals), device=self.device, dtype=torch.long
