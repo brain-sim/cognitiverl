@@ -63,8 +63,6 @@ class BaseNavEnvCfg(DirectRLEnvCfg):
 class NavEnvCfg(DirectRLEnvCfg):
     decimation = 4
     episode_length_s = 30.0
-    action_space = 2
-    observation_space = 3075  # Changed from 8 to 9 to include minimum wall distance
     """
     observation_space = {
         "state": 6,
@@ -92,6 +90,10 @@ class NavEnvCfg(DirectRLEnvCfg):
         "Knuckle__Upright__Front_Left",
     ]
 
+    # Action and observation space
+    action_space = 2
+    observation_space = 3075  # Changed from 8 to 9 to include minimum wall distance
+
     env_spacing = 40.0
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
         num_envs=4096, env_spacing=env_spacing, replicate_physics=True
@@ -99,25 +101,29 @@ class NavEnvCfg(DirectRLEnvCfg):
 
     num_goals = 10
 
+    # Wall parameters
+    wall_thickness = 2.0
+    wall_height = 3.0
     course_length_coefficient = 2.5
     course_width_coefficient = 2.0
     position_tolerance = 0.15
+
+    # Reward Coefficients (updated to navigation robot)
     goal_reached_bonus = 10.0
-    position_progress_weight = 1.0
+    position_progress_weight = 3.0
+    heading_progress_weight = 0.5
+    wall_penalty_weight = 1.0
+    linear_speed_weight = 0.05
+    laziness_penalty_weight = 1.0
     heading_coefficient = 0.25
-    heading_progress_weight = 0.05
+    laziness_decay = 0.95
+    laziness_threshold = 0.5
+    max_laziness = 10.0
 
     throttle_scale = 10
     throttle_max = 50
     steering_scale = 0.1
     steering_max = 0.75
-
-    laziness_decay = 0.95
-    laziness_threshold = 0.5
-    max_laziness = 10.0
-
-    wall_thickness = 2.0
-    wall_height = 3.0
 
 
 @configclass

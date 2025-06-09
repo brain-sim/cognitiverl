@@ -46,9 +46,18 @@ class NavEnv(DirectRLEnv):
         self.position_progress_weight = self.cfg.position_progress_weight
         self.heading_coefficient = self.cfg.heading_coefficient
         self.heading_progress_weight = self.cfg.heading_progress_weight
+        self.wall_penalty_weight = self.cfg.wall_penalty_weight
+        self.linear_speed_weight = self.cfg.linear_speed_weight
+        self.laziness_penalty_weight = self.cfg.laziness_penalty_weight
         self._target_index = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.int32
         )
+        self._accumulated_laziness = torch.zeros(
+            (self.num_envs), device=self.device, dtype=torch.float32
+        )
+        self.laziness_decay = self.cfg.laziness_decay
+        self.laziness_threshold = self.cfg.laziness_threshold
+        self.max_laziness = self.cfg.max_laziness
 
     def _setup_scene(self):
         # Create a large ground plane without grid
@@ -141,6 +150,7 @@ class NavEnv(DirectRLEnv):
                 self.robot.data.root_ang_vel_w[:, 2].unsqueeze(dim=1),
                 self._throttle_state[:, 0].unsqueeze(dim=1),
                 self._steering_state[:, 0].unsqueeze(dim=1),
+                self._get_distance_to_walls().unsqueeze(dim=1),
             ),
             dim=-1,
         )
@@ -151,19 +161,82 @@ class NavEnv(DirectRLEnv):
         return {"policy": obs}
 
     def _get_rewards(self) -> torch.Tensor:
-        position_progress_rew = self._previous_position_error - self._position_error
-        target_heading_rew = torch.exp(
-            -torch.abs(self.target_heading_error) / self.heading_coefficient
+        position_progress_reward = torch.nan_to_num(
+            self.position_progress_weight
+            * (self._previous_position_error - self._position_error),
+            posinf=0.0,
+            neginf=0.0,
         )
+        target_heading_reward = torch.nan_to_num(
+            self.heading_progress_weight
+            * torch.exp(
+                -torch.abs(self.target_heading_error) / self.heading_coefficient
+            ),
+            posinf=0.0,
+            neginf=0.0,
+        )
+        goal_reached_reward = self.goal_reached_bonus * torch.nan_to_num(
+            torch.where(
+                self._position_error < self.position_tolerance,
+                1.0,
+                torch.zeros_like(self._position_error),
+            ),
+            posinf=0.0,
+            neginf=0.0,
+        )
+
         goal_reached = self._position_error < self.position_tolerance
         self._target_index = self._target_index + goal_reached
         self.task_completed = self._target_index > (self._num_goals - 1)
         self._target_index = self._target_index % self._num_goals
 
+        linear_speed = torch.norm(self.robot.data.root_lin_vel_b[:, :2], dim=-1)
+        current_laziness = torch.where(
+            linear_speed < self.laziness_threshold,
+            torch.ones_like(linear_speed),
+            torch.zeros_like(linear_speed),
+        )
+
+        self._accumulated_laziness = (
+            self._accumulated_laziness * self.laziness_decay + current_laziness
+        )
+        self._accumulated_laziness = torch.clamp(
+            self._accumulated_laziness, 0.0, self.max_laziness
+        )
+
+        laziness_penalty = torch.nan_to_num(
+            -self.laziness_penalty_weight * torch.log1p(self._accumulated_laziness),
+            posinf=0.0,
+            neginf=0.0,
+        )
+
+        self._accumulated_laziness = torch.where(
+            goal_reached,
+            torch.zeros_like(self._accumulated_laziness),
+            self._accumulated_laziness,
+        )
+
+        min_wall_dist = self._get_distance_to_walls()
+        danger_distance = self.cfg.wall_thickness / 2 + 5.0
+        wall_penalty = torch.where(
+            min_wall_dist > danger_distance,
+            torch.zeros_like(min_wall_dist),
+            -self.wall_penalty_weight
+            * torch.exp(1.0 - min_wall_dist / danger_distance),
+        )
+        linear_speed_reward = self.linear_speed_weight * torch.nan_to_num(
+            linear_speed / (self.target_heading_error + 1e-8),
+            posinf=0.0,
+            neginf=0.0,
+        )
+
         composite_reward = (
-            position_progress_rew * self.position_progress_weight
-            + target_heading_rew * self.heading_progress_weight
-            + goal_reached * self.goal_reached_bonus
+            position_progress_reward
+            + target_heading_reward
+            + goal_reached_reward
+            + linear_speed_reward
+            + laziness_penalty
+            + wall_penalty
         )
 
         one_hot_encoded = torch.nn.functional.one_hot(
@@ -258,3 +331,23 @@ class NavEnv(DirectRLEnv):
             torch.sin(target_heading_w - heading), torch.cos(target_heading_w - heading)
         )
         self._previous_heading_error = self._heading_error.clone()
+
+    def _get_distance_to_walls(self):
+        robot_positions = self.robot.data.root_pos_w[:, :2]
+        env_origins = self.scene.env_origins[:, :2]
+
+        relative_positions = robot_positions - env_origins
+
+        wall_position = self.cfg.env_spacing / 2
+
+        north_dist = wall_position - relative_positions[:, 1]
+        south_dist = wall_position + relative_positions[:, 1]
+        east_dist = wall_position - relative_positions[:, 0]
+        west_dist = wall_position + relative_positions[:, 0]
+
+        wall_distances = torch.stack(
+            [north_dist, south_dist, east_dist, west_dist], dim=1
+        )
+        min_wall_distance = torch.min(wall_distances, dim=1)[0]
+
+        return min_wall_distance

@@ -52,6 +52,9 @@ class NavEnv(DirectRLEnv):
         self.position_progress_weight = self.cfg.position_progress_weight
         self.heading_coefficient = self.cfg.heading_coefficient
         self.heading_progress_weight = self.cfg.heading_progress_weight
+        self.wall_penalty_weight = self.cfg.wall_penalty_weight
+        self.linear_speed_weight = self.cfg.linear_speed_weight
+        self.laziness_penalty_weight = self.cfg.laziness_penalty_weight
         self._target_index = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.int32
         )
@@ -254,18 +257,39 @@ class NavEnv(DirectRLEnv):
         return {"policy": obs}
 
     def _get_rewards(self) -> torch.Tensor:
-        position_progress_rew = self._previous_position_error - self._position_error
-        target_heading_rew = torch.exp(
-            -torch.abs(self.target_heading_error) / self.heading_coefficient
+        position_progress_reward = torch.nan_to_num(
+            self.position_progress_weight
+            * (self._previous_position_error - self._position_error),
+            posinf=0.0,
+            neginf=0.0,
+        )
+        target_heading_reward = torch.nan_to_num(
+            self.heading_progress_weight
+            * torch.exp(
+                -torch.abs(self.target_heading_error) / self.heading_coefficient
+            ),
+            posinf=0.0,
+            neginf=0.0,
         )
         goal_reached = self._position_error < self.position_tolerance
+        goal_reached_reward = self.goal_reached_bonus * torch.nan_to_num(
+            torch.where(
+                self._position_error < self.position_tolerance,
+                1.0,
+                torch.zeros_like(self._position_error),
+            ),
+            posinf=0.0,
+            neginf=0.0,
+        )
         self._target_index = self._target_index + goal_reached
         self.task_completed = self._target_index > (self._num_goals - 1)
         self._target_index = self._target_index % self._num_goals
 
         # Calculate current laziness based on speed
-        linear_speed = torch.norm(
-            self.robot.data.root_lin_vel_b[:, :2], dim=-1
+        linear_speed = torch.nan_to_num(
+            torch.norm(self.robot.data.root_lin_vel_b[:, :2], dim=-1),
+            posinf=0.0,
+            neginf=0.0,
         )  # XY plane velocity
         current_laziness = torch.where(
             linear_speed < self.laziness_threshold,
@@ -283,8 +307,10 @@ class NavEnv(DirectRLEnv):
         )
 
         # Calculate laziness penalty using log
-        laziness_penalty = -0.3 * torch.log1p(
-            self._accumulated_laziness
+        laziness_penalty = torch.nan_to_num(
+            -self.laziness_penalty_weight * torch.log1p(self._accumulated_laziness),
+            posinf=0.0,
+            neginf=0.0,
         )  # log1p(x) = log(1 + x)
 
         # Reset accumulated laziness when reaching waypoint
@@ -294,23 +320,6 @@ class NavEnv(DirectRLEnv):
             self._accumulated_laziness,
         )
 
-        # Debug print
-        if not hasattr(self, "_debug_counter"):
-            self._debug_counter = 0
-        self._debug_counter += 1
-
-        if self._debug_counter % 100 == 0:
-            with torch.no_grad():
-                debug_size = 5
-                print("\nLaziness Debug (Step {}):".format(self._debug_counter))
-                for i in range(min(debug_size, self.num_envs)):
-                    print(f"Env {i}:")
-                    print(f"  Current speed: {linear_speed[i]:.3f}")
-                    print(
-                        f"  Accumulated laziness: {self._accumulated_laziness[i]:.3f}"
-                    )
-                    print(f"  Laziness penalty: {laziness_penalty[i]:.3f}")
-
         # Add wall distance penalty
         min_wall_dist = self._get_distance_to_walls()
         danger_distance = (
@@ -319,17 +328,21 @@ class NavEnv(DirectRLEnv):
         wall_penalty = torch.where(
             min_wall_dist > danger_distance,
             torch.zeros_like(min_wall_dist),
-            -0.2
+            -self.wall_penalty_weight
             * torch.exp(1.0 - min_wall_dist / danger_distance),  # Exponential penalty
+        )
+        linear_speed_reward = self.linear_speed_weight * torch.nan_to_num(
+            linear_speed / (self.target_heading_error + 1e-8),
+            posinf=0.0,
+            neginf=0.0,
         )
 
         composite_reward = (
-            # position_progress_rew * self.position_progress_weight +
-            position_progress_rew * 3
-            + target_heading_rew * 0.5
-            + goal_reached * self.goal_reached_bonus
-            + linear_speed / (self.target_heading_error + 1e-8) * 0.05
-            + laziness_penalty  # Updated laziness penalty
+            position_progress_reward
+            + target_heading_reward
+            + goal_reached_reward
+            + linear_speed_reward
+            + laziness_penalty
             + wall_penalty
         )
 

@@ -785,7 +785,8 @@ class SpotNavEnv(DirectRLEnv):
                 min=-self.room_size + self.wall_thickness + self.cfg.position_tolerance,
                 max=self.room_size - self.wall_thickness - self.cfg.position_tolerance,
             )
-            print(f"Target positions: {self._target_positions[env_ids, i, :2]}")
+            if self._debug and self._debug_counter % 100 == 0:
+                print(f"Target positions: {self._target_positions[env_ids, i, :2]}")
 
         # Offset by environment origins
         self._target_positions[env_ids, :] += self.scene.env_origins[
