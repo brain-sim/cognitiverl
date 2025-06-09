@@ -99,14 +99,14 @@ class NavEnvCfg(DirectRLEnvCfg):
         num_envs=4096, env_spacing=env_spacing, replicate_physics=True
     )
 
-    num_goals = 10
-
     # Wall parameters
+    room_size = 20.0
+    num_goals = 10
     wall_thickness = 2.0
     wall_height = 3.0
     course_length_coefficient = 2.5
     course_width_coefficient = 2.0
-    position_tolerance = 0.15
+    position_tolerance = waypoint_cfg.markers["marker1"].radius
 
     # Reward Coefficients (updated to navigation robot)
     goal_reached_bonus = 10.0

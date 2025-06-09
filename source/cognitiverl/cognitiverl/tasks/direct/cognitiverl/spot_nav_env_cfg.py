@@ -62,7 +62,6 @@ class SpotNavEnvCfg(DirectRLEnvCfg):
     num_goals = 10
     wall_thickness = 5.0
     wall_height = 3.0
-
     course_length_coefficient = 2.5
     course_width_coefficient = 2.0
     position_tolerance = waypoint_cfg.markers["marker1"].radius
@@ -75,12 +74,11 @@ class SpotNavEnvCfg(DirectRLEnvCfg):
     linear_speed_weight = 0.05
     laziness_penalty_weight = 1.0
     heading_coefficient = 0.25
-
-    # Action Scaling
-    action_scale = 3.0
-    action_max = 3.0
-
     # Laziness
     laziness_decay = 0.95
     laziness_threshold = 1.0
     max_laziness = 10.0
+
+    # Action Scaling
+    action_scale = 3.0
+    action_max = 3.0

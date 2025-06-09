@@ -104,10 +104,12 @@ except ImportError:
 
 # Keyboard mapping: (forward, left, yaw)
 KEYBOARD_MAPPING = {
-    "w": (10.0, 0.0),  # forward
+    "w": (1.0, 0.0),  # forward
     "s": (-5.0, 0.0),  # backward
-    "a": (0.0, 3.0),  # left
-    "d": (0.0, -3.0),  # right
+    "a": (2.0, -2.0),  # forward left
+    "d": (2.0, 2.0),  # forward right
+    "z": (-2.0, -2.0),  # backward left
+    "c": (-2.0, 2.0),  # backward right
 }
 
 
@@ -115,7 +117,7 @@ def main():
     """Main function."""
     print("[INFO]: Creating environment Spot Nav...")
     env = make_isaaclab_env(
-        "Spot-Nav-v0",
+        "CognitiveRL-Nav-v2",
         "cuda:0",
         1,
         False,
