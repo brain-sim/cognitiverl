@@ -284,6 +284,8 @@ def main(args):
     next_obs, _ = envs.reset()
     next_done = torch.zeros(args.num_envs).to(device)
     max_ep_ret = -float("inf")
+    max_ep_reward = -float("inf")
+    avg_reward_per_step = deque(maxlen=20)
     pbar = tqdm.tqdm(range(1, args.num_iterations + 1))
     global_step_burnin = None
     start_time = None
@@ -322,7 +324,14 @@ def main(args):
                 for r in infos["episode"]["r"]:
                     max_ep_ret = max(max_ep_ret, r)
                     avg_returns.append(r)
-                desc = f"global_step={global_step}, episodic_return={torch.tensor(avg_returns).mean():.2f} (max={max_ep_ret:.2f})"
+                for r in infos["episode"]["reward_max"]:
+                    max_ep_reward = max(max_ep_reward, r)
+                    avg_reward_per_step.append(r)
+                desc = (
+                    f"gl_st={global_step:3.0e}, "
+                    + f"ep_ret : avg={torch.tensor(avg_returns).mean():.2f}, max={max_ep_ret:.2f}, "
+                    + f"rew_per_step : avg={torch.tensor(avg_reward_per_step).mean():.2f}, max={max_ep_reward:.2f}"
+                )
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -420,7 +429,7 @@ def main(args):
 
         if global_step_burnin is not None and iteration % 10 == 0:
             speed = (global_step - global_step_burnin) / (time.time() - start_time)
-            pbar.set_description(f"speed: {speed: 4.1f} sps, " + desc)
+            pbar.set_description(f"spd: {speed: 3.1f} sps, " + desc)
             with torch.no_grad():
                 logs = {
                     "episode_return": np.array(avg_returns).mean(),

@@ -101,7 +101,7 @@ class NavEnvCfg(DirectRLEnvCfg):
 
     # Wall parameters
     room_size = 20.0
-    num_goals = 10
+    num_goals = 1
     wall_thickness = 5.0
     wall_height = 3.0
     course_length_coefficient = 2.5
@@ -119,12 +119,12 @@ class NavEnvCfg(DirectRLEnvCfg):
     # Laziness
     laziness_decay = 0.5
     laziness_threshold = 0.5
-    max_laziness = 10.0
+    max_laziness = 1.0
 
     throttle_scale = 10
     throttle_max = 50
-    steering_scale = 0.1
-    steering_max = 0.75
+    steering_scale = 2.0  # Old value: 0.1
+    steering_max = 10.0  # Old value: 0.75
 
 
 @configclass

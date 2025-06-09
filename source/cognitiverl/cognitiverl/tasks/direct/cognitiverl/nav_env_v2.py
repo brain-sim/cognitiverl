@@ -33,6 +33,7 @@ class NavEnv(DirectRLEnv):
         self._num_goals = getattr(cfg, "num_goals", 1)
 
         super().__init__(cfg, render_mode, **kwargs)
+        print(f"num_goals: {self._num_goals}")
         self._throttle_dof_idx, _ = self.robot.find_joints(self.cfg.throttle_dof_name)
         self._steering_dof_idx, _ = self.robot.find_joints(self.cfg.steering_dof_name)
         self._throttle_state = torch.zeros(
@@ -47,7 +48,6 @@ class NavEnv(DirectRLEnv):
         self.task_completed = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.bool
         )
-        self._num_goals = 10
         self._target_positions = torch.zeros(
             (self.num_envs, self._num_goals, 2), device=self.device, dtype=torch.float32
         )

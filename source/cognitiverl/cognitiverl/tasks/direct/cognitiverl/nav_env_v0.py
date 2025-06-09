@@ -217,7 +217,7 @@ class NavEnv(DirectRLEnv):
         )
 
         min_wall_dist = self._get_distance_to_walls()
-        danger_distance = self.cfg.wall_thickness / 2 + 5.0
+        danger_distance = self.cfg.wall_thickness / 2 + 2.0
         wall_penalty = torch.where(
             min_wall_dist > danger_distance,
             torch.zeros_like(min_wall_dist),

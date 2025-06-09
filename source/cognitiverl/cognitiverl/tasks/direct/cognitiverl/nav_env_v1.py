@@ -20,8 +20,8 @@ class NavEnv(DirectRLEnv):
 
     def __init__(self, cfg: NavEnvCfg, render_mode: str | None = None, **kwargs):
         # Add room size as a class attribute
-        self.room_size = 40.0  # Adjust as needed
-
+        self.room_size = getattr(cfg, "room_size", 40.0)  # Adjust as needed
+        self._num_goals = getattr(cfg, "num_goals", 1)
         super().__init__(cfg, render_mode, **kwargs)
         self._throttle_dof_idx, _ = self.robot.find_joints(self.cfg.throttle_dof_name)
         self._steering_dof_idx, _ = self.robot.find_joints(self.cfg.steering_dof_name)
@@ -37,7 +37,6 @@ class NavEnv(DirectRLEnv):
         self.task_completed = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.bool
         )
-        self._num_goals = 10
         self._target_positions = torch.zeros(
             (self.num_envs, self._num_goals, 2), device=self.device, dtype=torch.float32
         )
@@ -424,8 +423,7 @@ class NavEnv(DirectRLEnv):
 
         # CHANGE: Set car position to be randomly inside the room rather than outside of it
         # Use smaller margins to keep car away from walls
-        room_margin = 10.0  # keep the larger car away from walls
-        safe_room_size = self.room_size - room_margin * 2
+        safe_room_size = self.room_size // 2
 
         # Random position inside the room with margin
         robot_pose[:, 0] += (
@@ -458,16 +456,23 @@ class NavEnv(DirectRLEnv):
         self._markers_pos[env_ids, :, :] = 0.0
 
         # Define square room size
-        room_size = 20.0  # Size of the square room (20x20 units)
 
         # Generate random positions within the square room
         for i in range(self._num_goals):
             # Random positions within the square
             self._target_positions[env_ids, i, 0] = (
-                torch.rand(num_reset, device=self.device) * room_size - room_size / 2
+                torch.rand(num_reset, device=self.device) * self.room_size
+                - self.room_size / 2
+            ).clip(
+                min=-self.room_size + self.wall_thickness + self.cfg.position_tolerance,
+                max=self.room_size - self.wall_thickness - self.cfg.position_tolerance,
             )
             self._target_positions[env_ids, i, 1] = (
-                torch.rand(num_reset, device=self.device) * room_size - room_size / 2
+                torch.rand(num_reset, device=self.device) * self.room_size
+                - self.room_size / 2
+            ).clip(
+                min=-self.room_size + self.wall_thickness + self.cfg.position_tolerance,
+                max=self.room_size - self.wall_thickness - self.cfg.position_tolerance,
             )
 
         # Offset by environment origins
