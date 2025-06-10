@@ -52,8 +52,6 @@ class SpotNavEnv(DirectRLEnv):
             (self.num_envs, self._num_goals, 3), device=self.device, dtype=torch.float32
         )
         self.env_spacing = self.cfg.env_spacing
-        self.course_length_coefficient = self.cfg.course_length_coefficient
-        self.course_width_coefficient = self.cfg.course_width_coefficient
         self.position_tolerance = self.cfg.position_tolerance
         self.goal_reached_bonus = self.cfg.goal_reached_bonus
         self.heading_progress_weight = self.cfg.heading_progress_weight
@@ -79,6 +77,7 @@ class SpotNavEnv(DirectRLEnv):
         )  # Cap on accumulated laziness to prevent extreme penalties
         self.wall_penalty_weight = self.cfg.wall_penalty_weight
         self.linear_speed_weight = self.cfg.linear_speed_weight
+        self.flip_penalty_weight = self.cfg.flip_penalty_weight
 
         self._debug = debug
 
@@ -89,6 +88,9 @@ class SpotNavEnv(DirectRLEnv):
         # Buffers for previous action and default joint positions
         self._previous_action = torch.zeros(
             (self.num_envs, 12), device=self.device, dtype=torch.float32
+        )
+        self.previous_linear_speed = torch.zeros(
+            (self.num_envs), device=self.device, dtype=torch.float32
         )
         self._default_pos = self.robot.data.default_joint_pos.clone()
 
@@ -105,7 +107,10 @@ class SpotNavEnv(DirectRLEnv):
         spawn_ground_plane(
             prim_path="/World/ground",
             cfg=GroundPlaneCfg(
-                size=(500.0, 500.0),  # Much larger ground plane (500m x 500m)
+                size=(
+                    4096 * 40.0,
+                    4096 * 40.0,
+                ),  # Much larger ground plane (500m x 500m)
                 color=(0.2, 0.2, 0.2),  # Dark gray color
                 physics_material=sim_utils.RigidBodyMaterialCfg(
                     friction_combine_mode="multiply",
@@ -421,6 +426,9 @@ class SpotNavEnv(DirectRLEnv):
         # -- reset envs that terminated/timed-out and log the episode information
         reset_env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
         if len(reset_env_ids) > 0:
+            self.extras["success_rate"] = (
+                self._target_index[reset_env_ids] / self._num_goals * len(reset_env_ids)
+            )
             self._reset_idx(reset_env_ids)
             # update articulation kinematics
             self.scene.write_data_to_sim()
@@ -611,6 +619,7 @@ class SpotNavEnv(DirectRLEnv):
         danger_distance = (
             self.wall_thickness / 2 + 2.0
         )  # Distance at which to start penalizing
+        print(f"min_wall_dist: {min_wall_dist}, danger_distance: {danger_distance}")
         wall_penalty = torch.nan_to_num(
             torch.where(
                 min_wall_dist > danger_distance,
@@ -624,13 +633,20 @@ class SpotNavEnv(DirectRLEnv):
             neginf=0.0,
         )
         linear_speed_reward = self.linear_speed_weight * torch.nan_to_num(
-            linear_speed / (self.target_heading_error + 1e-8),
+            linear_speed * 0.9 + self.previous_linear_speed * 0.1,
             posinf=0.0,
             neginf=0.0,
         )
-
+        self.previous_linear_speed = linear_speed.clone()
+        time_penalty = -torch.ones_like(laziness_penalty)
+        flip_penalty = -self.flip_penalty_weight * self._vehicle_flipped
         composite_reward = (
-            goal_reached_reward + linear_speed_reward + laziness_penalty + wall_penalty
+            goal_reached_reward
+            + linear_speed_reward
+            + laziness_penalty
+            + wall_penalty
+            + time_penalty
+            + flip_penalty
             # + position_progress_reward
             # + target_heading_reward
         )
@@ -645,6 +661,16 @@ class SpotNavEnv(DirectRLEnv):
             print(f"Laziness penalty: {laziness_penalty[0].item()}")
             print(f"Wall penalty: {wall_penalty[0].item()}")
             print("=" * 100)
+
+        print("=" * 30)
+        print(f"Goal Reward: {goal_reached_reward.min()} {goal_reached_reward.max()}")
+        print(
+            f"Linear speed reward: {linear_speed_reward.min()} {linear_speed_reward.max()}"
+        )
+        print(f"Laziness penalty: {laziness_penalty.min()} {laziness_penalty.max()}")
+        print(f"Wall penalty: {wall_penalty.min()} {wall_penalty.max()}")
+        print(f"Flip penalty: {flip_penalty.min()} {flip_penalty.max()}")
+        print("=" * 30)
 
         # Create a tensor of 0s (future), 1s (current), and 2s (completed)
         marker_indices = torch.zeros(
@@ -711,17 +737,20 @@ class SpotNavEnv(DirectRLEnv):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         task_failed = self.episode_length_buf > self.max_episode_length
-        vehicle_flipped = self._check_robot_flipped()
-        task_failed |= vehicle_flipped
+        self._vehicle_flipped = self._check_robot_flipped()
+        task_failed |= self._vehicle_flipped
         debug_size = 5
         if self._debug:
-            if torch.any(vehicle_flipped[:debug_size]):
-                print(f"Vehicle flipped : {vehicle_flipped[:debug_size]}")
+            if torch.any(self._vehicle_flipped[:debug_size]):
+                print(f"Vehicle flipped : {self._vehicle_flipped[:debug_size]}")
             if torch.any(task_failed[:debug_size]):
                 print(f"Task failed : {task_failed[:debug_size]}")
             if torch.any(self.task_completed[:debug_size]):
                 print(f"Task completed : {self.task_completed[:debug_size]}")
-        return task_failed, self.task_completed
+        return (
+            task_failed,
+            self.task_completed,
+        )
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:

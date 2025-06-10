@@ -2,7 +2,6 @@
 import os
 import sys
 import time
-from collections import deque
 from dataclasses import asdict
 
 import gymnasium as gym
@@ -104,7 +103,7 @@ class ExperimentArgs:
     # Agent config
     agent_type: str = "CNNPPOAgent"
 
-    checkpoint_interval: int = 1
+    checkpoint_interval: int = 10
     """environment steps between saving checkpoints."""
     play_interval: int = 3
     """environment steps between playing evaluation episodes during training."""
@@ -116,6 +115,8 @@ class ExperimentArgs:
     """number of environments to run for evaluation/play."""
     num_eval_env_steps: int = 200
     """number of steps to run for evaluation/play."""
+    log_interval: int = 10
+    """number of iterations between logging."""
     log: bool = False
     """whether to log the training process."""
 
@@ -276,7 +277,6 @@ def main(args):
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    avg_returns = deque(maxlen=20)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -285,7 +285,7 @@ def main(args):
     next_done = torch.zeros(args.num_envs).to(device)
     max_ep_ret = -float("inf")
     max_ep_reward = -float("inf")
-    avg_reward_per_step = deque(maxlen=20)
+    success_rates, avg_reward_per_step, avg_returns = [], [], []
     pbar = tqdm.tqdm(range(1, args.num_iterations + 1))
     global_step_burnin = None
     start_time = None
@@ -327,11 +327,8 @@ def main(args):
                 for r in infos["episode"]["reward_max"]:
                     max_ep_reward = max(max_ep_reward, r)
                     avg_reward_per_step.append(r)
-                desc = (
-                    f"gl_st={global_step:3.0e}, "
-                    + f"ep_ret : avg={torch.tensor(avg_returns).mean():.2f}, max={max_ep_ret:.2f}, "
-                    + f"rew_per_step : avg={torch.tensor(avg_reward_per_step).mean():.2f}, max={max_ep_reward:.2f}"
-                )
+            if "success_rate" in infos:
+                success_rates.append(infos["success_rate"])
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -427,12 +424,19 @@ def main(args):
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
-        if global_step_burnin is not None and iteration % 10 == 0:
+        if global_step_burnin is not None and iteration % args.log_interval == 0:
             speed = (global_step - global_step_burnin) / (time.time() - start_time)
-            pbar.set_description(f"spd: {speed: 3.1f} sps, " + desc)
+            desc = (
+                f"gl_st={global_step:3.0F}, "
+                + f"ep_ret : avg={torch.tensor(avg_returns).mean():.2f}, max={max_ep_ret:.2f}, "
+                + f"rew_per_step : avg={torch.tensor(avg_reward_per_step).mean():.2f}, max={max_ep_reward:.2f}"
+            )
+            pbar.set_description(f"spd(sps): {speed:3.1f}, " + desc)
             with torch.no_grad():
                 logs = {
-                    "episode_return": np.array(avg_returns).mean(),
+                    "episode_return": np.array(avg_returns).mean()
+                    if len(avg_returns) > 0
+                    else 0,
                     "logprobs": b_logprobs.mean(),
                     "advantages": advantages.mean(),
                     "returns": returns.mean(),
@@ -443,6 +447,9 @@ def main(args):
                     "old_approx_kl": old_approx_kl,
                     "approx_kl": approx_kl,
                 }
+                if "success_rate" in infos:
+                    logs["success_rate"] = torch.tensor(success_rates).mean()
+                success_rates, avg_reward_per_step, avg_returns = [], [], []
             wandb.log(
                 {
                     "speed": speed,

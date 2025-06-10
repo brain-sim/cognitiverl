@@ -58,25 +58,24 @@ class SpotNavEnvCfg(DirectRLEnvCfg):
     )
 
     # Scene Properties
-    room_size = 20.0
+    room_size = 40.0
     num_goals = 10
-    wall_thickness = 5.0
+    wall_thickness = 2.0
     wall_height = 3.0
-    course_length_coefficient = 2.5
-    course_width_coefficient = 2.0
     position_tolerance = waypoint_cfg.markers["marker1"].radius
 
     # Reward Coefficients
-    goal_reached_bonus = 10.0
+    goal_reached_bonus = 125.0
     position_progress_weight = 3.0
     heading_progress_weight = 0.5
-    wall_penalty_weight = 1.0
+    wall_penalty_weight = 10.0
     linear_speed_weight = 0.05
     laziness_penalty_weight = 1.0
     heading_coefficient = 0.25
+    flip_penalty_weight = 100.0
     # Laziness
-    laziness_decay = 0.95
-    laziness_threshold = 1.0
+    laziness_decay = 0.99
+    laziness_threshold = 8.0
     max_laziness = 10.0
 
     # Action Scaling

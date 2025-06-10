@@ -55,8 +55,6 @@ class NavEnv(DirectRLEnv):
             (self.num_envs, self._num_goals, 3), device=self.device, dtype=torch.float32
         )
         self.env_spacing = self.cfg.env_spacing
-        self.course_length_coefficient = self.cfg.course_length_coefficient
-        self.course_width_coefficient = self.cfg.course_width_coefficient
         self.position_tolerance = self.cfg.position_tolerance
         self.goal_reached_bonus = self.cfg.goal_reached_bonus
         self.position_progress_weight = self.cfg.position_progress_weight
@@ -65,12 +63,17 @@ class NavEnv(DirectRLEnv):
         self.wall_penalty_weight = self.cfg.wall_penalty_weight
         self.linear_speed_weight = self.cfg.linear_speed_weight
         self.laziness_penalty_weight = self.cfg.laziness_penalty_weight
+        self.flip_penalty_weight = self.cfg.flip_penalty_weight
         self._target_index = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.int32
         )
 
         # Add accumulated laziness tracker
         self._accumulated_laziness = torch.zeros(
+            (self.num_envs), device=self.device, dtype=torch.float32
+        )
+        # Add previous linear speed tracker
+        self.previous_linear_speed = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.float32
         )
         self.laziness_decay = (
@@ -90,7 +93,7 @@ class NavEnv(DirectRLEnv):
         spawn_ground_plane(
             prim_path="/World/ground",
             cfg=GroundPlaneCfg(
-                size=(500.0, 500.0),  # Much larger ground plane (500m x 500m)
+                size=(5000.0, 5000.0),  # Much larger ground plane (500m x 500m)
                 color=(0.2, 0.2, 0.2),  # Dark gray color
                 physics_material=sim_utils.RigidBodyMaterialCfg(
                     friction_combine_mode="multiply",
@@ -118,7 +121,7 @@ class NavEnv(DirectRLEnv):
         # Define wall properties
         self.wall_thickness = self.cfg.wall_thickness
         self.wall_height = self.cfg.wall_height
-        self.wall_position = self.room_size - self.wall_thickness
+        self.wall_position = (self.room_size - self.wall_thickness) / 2
 
         # Create physics material for walls
         PhysicsMaterial(
@@ -150,7 +153,7 @@ class NavEnv(DirectRLEnv):
                 ),
                 scale=np.array(
                     [
-                        self.room_size + self.wall_thickness,
+                        self.room_size,
                         self.wall_thickness,
                         self.wall_height,
                     ]
@@ -172,7 +175,7 @@ class NavEnv(DirectRLEnv):
                 ),
                 scale=np.array(
                     [
-                        self.room_size + self.wall_thickness,
+                        self.room_size,
                         self.wall_thickness,
                         self.wall_height,
                     ]
@@ -195,7 +198,7 @@ class NavEnv(DirectRLEnv):
                 scale=np.array(
                     [
                         self.wall_thickness,
-                        self.room_size + self.wall_thickness,
+                        self.room_size,
                         self.wall_height,
                     ]
                 ),
@@ -217,7 +220,7 @@ class NavEnv(DirectRLEnv):
                 scale=np.array(
                     [
                         self.wall_thickness,
-                        self.room_size + self.wall_thickness,
+                        self.room_size,
                         self.wall_height,
                     ]
                 ),
@@ -381,6 +384,9 @@ class NavEnv(DirectRLEnv):
         # -- reset envs that terminated/timed-out and log the episode information
         reset_env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
         if len(reset_env_ids) > 0:
+            self.extras["success_rate"] = self._target_index[reset_env_ids].sum() / (
+                self._num_goals * len(reset_env_ids)
+            )
             self._reset_idx(reset_env_ids)
             # update articulation kinematics
             self.scene.write_data_to_sim()
@@ -549,7 +555,8 @@ class NavEnv(DirectRLEnv):
             posinf=0.0,
             neginf=0.0,
         )  # log1p(x) = log(1 + x)
-
+        time_penalty = -torch.ones_like(laziness_penalty)
+        flip_penalty = -self.flip_penalty_weight * self._vehicle_flipped
         # Debug print
         if not hasattr(self, "_debug_counter"):
             self._debug_counter = 0
@@ -566,7 +573,6 @@ class NavEnv(DirectRLEnv):
                         f"  Accumulated laziness: {self._accumulated_laziness[i]:.3f}"
                     )
                     print(f"  Laziness penalty: {laziness_penalty[i]:.3f}")
-
         # Add wall distance penalty
         min_wall_dist = self._get_distance_to_walls()
         danger_distance = (
@@ -579,15 +585,23 @@ class NavEnv(DirectRLEnv):
             * torch.exp(1.0 - min_wall_dist / danger_distance),  # Exponential penalty
         )
         linear_speed_reward = self.linear_speed_weight * torch.nan_to_num(
-            linear_speed / (self.target_heading_error + 1e-8),
+            (linear_speed * 0.9 + self.previous_linear_speed * 0.1).clip(
+                min=0, max=10.0
+            ),  #  / (self.target_heading_error + 1e-8),
             posinf=0.0,
             neginf=0.0,
         )
+        self.previous_linear_speed = linear_speed.clone()
 
         composite_reward = (
             # position_progress_reward
             # + target_heading_reward
-            goal_reached_reward + linear_speed_reward + laziness_penalty + wall_penalty
+            goal_reached_reward
+            + linear_speed_reward
+            + laziness_penalty
+            + wall_penalty
+            # + time_penalty
+            + flip_penalty
         )
 
         # Create a tensor of 0s (future), 1s (current), and 2s (completed)
@@ -647,12 +661,12 @@ class NavEnv(DirectRLEnv):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
         task_failed = self.episode_length_buf > self.max_episode_length
-        vehicle_flipped = self._check_vehicle_flipped()
-        task_failed |= vehicle_flipped
+        self._vehicle_flipped = self._check_vehicle_flipped()
+        task_failed |= self._vehicle_flipped
         debug_size = 5
         if self._debug:
-            if torch.any(vehicle_flipped[:debug_size]):
-                print(f"Vehicle flipped : {vehicle_flipped[:debug_size]}")
+            if torch.any(self._vehicle_flipped[:debug_size]):
+                print(f"Vehicle flipped : {self._vehicle_flipped[:debug_size]}")
             if torch.any(task_failed[:debug_size]):
                 print(f"Task failed : {task_failed[:debug_size]}")
             if torch.any(self.task_completed[:debug_size]):
@@ -715,15 +729,23 @@ class NavEnv(DirectRLEnv):
                 torch.rand(num_reset, device=self.device) * self.room_size
                 - self.room_size / 2
             ).clip(
-                min=-self.room_size + self.wall_thickness + self.cfg.position_tolerance,
-                max=self.room_size - self.wall_thickness - self.cfg.position_tolerance,
+                min=-self.wall_position
+                + self.wall_thickness / 2
+                + self.cfg.position_tolerance,
+                max=self.wall_position
+                - self.wall_thickness / 2
+                - self.cfg.position_tolerance,
             )
             self._target_positions[env_ids, i, 1] = (
                 torch.rand(num_reset, device=self.device) * self.room_size
                 - self.room_size / 2
             ).clip(
-                min=-self.room_size + self.wall_thickness + self.cfg.position_tolerance,
-                max=self.room_size - self.wall_thickness - self.cfg.position_tolerance,
+                min=-self.wall_position
+                + self.wall_thickness / 2
+                + self.cfg.position_tolerance,
+                max=self.wall_position
+                - self.wall_thickness / 2
+                - self.cfg.position_tolerance,
             )
 
         # Offset by environment origins
@@ -772,22 +794,18 @@ class NavEnv(DirectRLEnv):
         relative_positions = (
             robot_positions - env_origins
         )  # Subtract environment origin
-
-        # Calculate distances to each wall within local environment coordinates
-        wall_position = self.room_size / 2
-
         # Distance to walls (positive means inside the room)
         north_dist = (
-            wall_position - relative_positions[:, 1]
+            self.wall_position - relative_positions[:, 1]
         )  # Distance to north wall (y+)
         south_dist = (
-            wall_position + relative_positions[:, 1]
+            self.wall_position + relative_positions[:, 1]
         )  # Distance to south wall (y-)
         east_dist = (
-            wall_position - relative_positions[:, 0]
+            self.wall_position - relative_positions[:, 0]
         )  # Distance to east wall (x+)
         west_dist = (
-            wall_position + relative_positions[:, 0]
+            self.wall_position + relative_positions[:, 0]
         )  # Distance to west wall (x-)
 
         # Stack all distances and get the minimum

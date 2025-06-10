@@ -13,7 +13,7 @@ WAYPOINT_CFG = VisualizationMarkersCfg(
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 1.0, 0.0)),
         ),
         "marker1": sim_utils.SphereCfg(  # current goal (green)
-            radius=1.0,
+            radius=3.0,
             visual_material=sim_utils.PreviewSurfaceCfg(
                 diffuse_color=(0.0, 1.0, 0.0), opacity=0.9
             ),
