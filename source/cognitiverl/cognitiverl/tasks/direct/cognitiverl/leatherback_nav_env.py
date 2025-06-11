@@ -117,7 +117,7 @@ class LeatherbackNavEnv(NavEnv):
         goal_reached_reward = self.goal_reached_bonus * torch.nan_to_num(
             torch.where(
                 goal_reached,
-                1.0,  # self._target_index,
+                1.0,
                 torch.zeros_like(self._position_error),
             ),
             posinf=0.0,
@@ -125,6 +125,7 @@ class LeatherbackNavEnv(NavEnv):
         )
 
         self._target_index = self._target_index + goal_reached
+        self._episode_waypoints_passed += goal_reached.int()
         self.task_completed = self._target_index > (self._num_goals - 1)
         self._target_index = self._target_index % self._num_goals
 
@@ -162,22 +163,6 @@ class LeatherbackNavEnv(NavEnv):
             neginf=0.0,
         )  # log1p(x) = log(1 + x)
 
-        # angular_speed = torch.norm(self.robot.data.root_ang_vel_w, dim=-1)
-        # self._accumulated_angular_speed = (
-        #     self._accumulated_angular_speed * 0.8 + angular_speed * 0.2
-        # )
-        # self._accumulated_angular_speed = torch.where(
-        #     self.task_completed,
-        #     torch.zeros_like(self._accumulated_angular_speed),
-        #     self._accumulated_angular_speed,
-        # )
-        # angular_penalty = -1.0 * torch.where(
-        #     self._accumulated_angular_speed > 2.0,
-        #     self._accumulated_angular_speed,
-        #     torch.zeros_like(self._accumulated_angular_speed),
-        # )
-
-        # time_penalty = -torch.ones_like(laziness_penalty)
         flip_penalty = -self.flip_penalty_weight * self._vehicle_flipped
         # Debug print
         if not hasattr(self, "_debug_counter"):
@@ -207,13 +192,10 @@ class LeatherbackNavEnv(NavEnv):
             * torch.exp(1.0 - min_wall_dist / danger_distance),  # Exponential penalty
         )
         linear_speed_reward = self.linear_speed_weight * torch.nan_to_num(
-            (linear_speed * 0.9 + self.previous_linear_speed * 0.1).clip(
-                min=0, max=10.0
-            ),  #  / (self.target_heading_error + 1e-8),
+            linear_speed,  #  / (self.target_heading_error + 1e-8),
             posinf=0.0,
             neginf=0.0,
         )
-        # self.previous_linear_speed = linear_speed.clone()
 
         composite_reward = (
             goal_reached_reward

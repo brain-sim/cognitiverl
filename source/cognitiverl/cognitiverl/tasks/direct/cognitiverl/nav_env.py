@@ -54,9 +54,8 @@ class NavEnv(DirectRLEnv):
         self._accumulated_laziness = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.float32
         )
-        # Add previous linear speed tracker
-        self.previous_linear_speed = torch.zeros(
-            (self.num_envs), device=self.device, dtype=torch.float32
+        self._episode_waypoints_passed = torch.zeros(
+            (self.num_envs), device=self.device, dtype=torch.int32
         )
 
         self._debug = debug
@@ -147,8 +146,6 @@ class NavEnv(DirectRLEnv):
                 ),
                 color=np.array([0.2, 0.3, 0.8]),
             )
-            # north_wall.set_collision_enabled(True)
-            # north_wall.apply_physics_material(wall_material)
 
             # South wall (bottom)
             FixedCuboid(
@@ -169,8 +166,6 @@ class NavEnv(DirectRLEnv):
                 ),
                 color=np.array([0.2, 0.3, 0.8]),
             )
-            # south_wall.set_collision_enabled(True)
-            # south_wall.apply_physics_material(wall_material)
 
             # East wall (right)
             FixedCuboid(
@@ -191,8 +186,6 @@ class NavEnv(DirectRLEnv):
                 ),
                 color=np.array([0.2, 0.3, 0.8]),
             )
-            # east_wall.set_collision_enabled(True)
-            # east_wall.apply_physics_material(wall_material)
 
             # West wall (left)
             FixedCuboid(
@@ -213,8 +206,6 @@ class NavEnv(DirectRLEnv):
                 ),
                 color=np.array([0.2, 0.3, 0.8]),
             )
-            # west_wall.set_collision_enabled(True)
-            # west_wall.apply_physics_material(wall_material)
         # Add lighting
         light_cfg = sim_utils.DomeLightCfg(intensity=2000.0, color=(0.75, 0.75, 0.75))
         light_cfg.func("/World/Light", light_cfg)
@@ -257,6 +248,26 @@ class NavEnv(DirectRLEnv):
         if torch.any(state_obs.isnan()):
             raise ValueError("Observations cannot be NAN")
         return {"policy": state_obs}
+
+    def _log_episode_info(self, env_ids: torch.Tensor):
+        """Logs episode information for the given environment IDs.
+        Args:
+            env_ids: A tensor of environment IDs that have been reset.
+        """
+        if len(env_ids) > 0:
+            # log episode reward
+            self.extras["episode_reward"] = torch.mean(
+                self.episode_reward_buf[env_ids].float()
+            ).item()
+            # log episode length
+            self.extras["episode_length"] = torch.mean(
+                self.episode_length_buf[env_ids].float()
+            ).item()
+            # calculate and log completion percentage
+            completion_frac = (
+                self.episode_waypoints_passed[env_ids].float() / self._num_goals
+            )
+            self.extras["success_rate"] = torch.mean(completion_frac).item()
 
     def step(self, action: torch.Tensor) -> VecEnvStepReturn:
         """Execute one time-step of the environment's dynamics.
@@ -326,9 +337,7 @@ class NavEnv(DirectRLEnv):
         # -- reset envs that terminated/timed-out and log the episode information
         reset_env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
         if len(reset_env_ids) > 0:
-            self.extras["success_rate"] = self._target_index[reset_env_ids].sum() / (
-                self._num_goals * len(reset_env_ids)
-            )
+            self._log_episode_info(reset_env_ids)
             self._reset_idx(reset_env_ids)
             # update articulation kinematics
             self.scene.write_data_to_sim()
@@ -486,6 +495,8 @@ class NavEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
         self.camera.reset(env_ids)
+
+        self._episode_waypoints_passed[env_ids] = 0
 
         num_reset = len(env_ids)
         default_state = self.robot.data.default_root_state[env_ids]
