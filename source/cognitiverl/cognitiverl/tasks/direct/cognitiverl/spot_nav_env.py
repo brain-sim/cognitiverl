@@ -59,8 +59,13 @@ class SpotNavEnv(NavEnv):
         policy_file_path = "/home/user/cognitiverl/source/cognitiverl/cognitiverl/tasks/direct/custom_assets/spot_policy.pt"  # <-- Set this to your actual policy file
         self.policy = SpotPolicyController(policy_file_path)
         # Buffers for previous action and default joint positions
-        self._previous_action = torch.zeros(
+        self._low_level_previous_action = torch.zeros(
             (self.num_envs, 12), device=self.device, dtype=torch.float32
+        )
+        self._previous_action = torch.zeros(
+            (self.num_envs, self.cfg.action_space),
+            device=self.device,
+            dtype=torch.float32,
         )
         self.previous_linear_speed = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.float32
@@ -91,6 +96,7 @@ class SpotNavEnv(NavEnv):
             dtype=torch.float32,
         )
         self._default_pos = self.robot.data.default_joint_pos.clone()
+        self._smoothing_factor = 0.5
 
     def _setup_camera(self):
         camera_prim_path = "/World/envs/env_.*/Robot/body/Camera"
@@ -118,6 +124,11 @@ class SpotNavEnv(NavEnv):
         self.camera = TiledCamera(camera_cfg)
 
     def _pre_physics_step(self, actions: torch.Tensor) -> None:
+        actions = (
+            self._smoothing_factor * actions
+            + (1 - self._smoothing_factor) * self._previous_action
+        )
+        self._previous_action = actions.clone()
         self._actions = actions.clone()
         self._actions = self._actions * self.action_scale
         self._actions = torch.nan_to_num(self._actions, 0.0)
@@ -130,7 +141,7 @@ class SpotNavEnv(NavEnv):
         # --- Vectorized low-level Spot policy call for all environments ---
         # Gather all required robot state as torch tensors
         # TODO: Replace the following with actual command logic per environment
-        previous_action = self._previous_action  # [num_envs, 12]
+        previous_action = self._low_level_previous_action  # [num_envs, 12]
         default_pos = self._default_pos.clone()  # [num_envs, 12]
         # The following assumes your robot exposes these as torch tensors of shape [num_envs, ...]
         lin_vel_I = self.robot.data.root_lin_vel_w  # [num_envs, 3]
@@ -150,7 +161,7 @@ class SpotNavEnv(NavEnv):
             joint_vel,
         )
         # Update previous action buffer
-        self._previous_action = actions.detach()
+        self._low_level_previous_action = actions.detach()
         # Scale and offset actions as in Spot reference policy
         joint_positions = self._default_pos + actions * self.ACTION_SCALE
         # Apply joint position targets directly

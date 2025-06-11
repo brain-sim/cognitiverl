@@ -60,9 +60,9 @@ class ExperimentArgs:
     # Algorithm specific arguments
 
     """the id of the environment"""
-    total_timesteps: int = 25_000
+    total_timesteps: int = 10_000_000
     """total timesteps of the experiments"""
-    learning_rate: float = 1e-3
+    learning_rate: float = 3e-4
     """the learning rate of the optimizer"""
     num_steps: int = 64
     """the number of steps to run in each environment per policy rollout"""
@@ -78,7 +78,7 @@ class ExperimentArgs:
     """the K epochs to update the policy"""
     norm_adv: bool = False
     """Toggles advantages normalization"""
-    clip_coef: float = 0.25
+    clip_coef: float = 0.2
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
@@ -86,7 +86,7 @@ class ExperimentArgs:
     """coefficient of the entropy"""
     vf_coef: float = 1.0
     """coefficient of the value function"""
-    max_grad_norm: float = 10.0
+    max_grad_norm: float = 1.0
     """the maximum norm for the gradient clipping"""
     target_kl: float = 0.01
     """the target KL divergence threshold"""

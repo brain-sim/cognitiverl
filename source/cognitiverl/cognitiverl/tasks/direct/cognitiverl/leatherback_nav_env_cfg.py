@@ -40,15 +40,15 @@ class LeatherbackNavEnvCfg(NavEnvCfg):
     heading_progress_weight = 0.5
     wall_penalty_weight = 0.2
     linear_speed_weight = 0.05
-    laziness_penalty_weight = 1.0
-    flip_penalty_weight = 100.0
+    laziness_penalty_weight = 0.3
+    # flip_penalty_weight = 100.0
 
     # Laziness
     laziness_decay = 0.99
     laziness_threshold = 8.0
     max_laziness = 10.0
 
-    throttle_scale = 10.0
-    throttle_max = 200.0
+    throttle_scale = 20.0
+    throttle_max = 500.0
     steering_scale = 3.0  # Old value: 0.1
     steering_max = 3.0  # Old value: 0.75

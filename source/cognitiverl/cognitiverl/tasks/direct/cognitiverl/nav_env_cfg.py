@@ -25,7 +25,7 @@ class NavEnvCfg(DirectRLEnvCfg):
     episode_length_s = 30.0
 
     # simulation
-    sim: SimulationCfg = SimulationCfg(dt=1 / 120, render_interval=decimation)
+    sim: SimulationCfg = SimulationCfg(dt=1 / 60, render_interval=decimation)
 
     # scene
     env_spacing = 40.0

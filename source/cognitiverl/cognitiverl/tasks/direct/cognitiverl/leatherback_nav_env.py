@@ -14,12 +14,10 @@ class LeatherbackNavEnv(NavEnv):
         self.position_tolerance = self.cfg.position_tolerance
         self.goal_reached_bonus = self.cfg.goal_reached_bonus
         self.position_progress_weight = self.cfg.position_progress_weight
-        self.heading_coefficient = self.cfg.heading_coefficient
         self.heading_progress_weight = self.cfg.heading_progress_weight
         self.wall_penalty_weight = self.cfg.wall_penalty_weight
         self.linear_speed_weight = self.cfg.linear_speed_weight
         self.laziness_penalty_weight = self.cfg.laziness_penalty_weight
-        self.flip_penalty_weight = self.cfg.flip_penalty_weight
         self.throttle_scale = self.cfg.throttle_scale
         self.throttle_max = self.cfg.throttle_max
         self.steering_scale = self.cfg.steering_scale
@@ -162,8 +160,6 @@ class LeatherbackNavEnv(NavEnv):
             posinf=0.0,
             neginf=0.0,
         )  # log1p(x) = log(1 + x)
-
-        flip_penalty = -self.flip_penalty_weight * self._vehicle_flipped
         # Debug print
         if not hasattr(self, "_debug_counter"):
             self._debug_counter = 0
@@ -198,11 +194,7 @@ class LeatherbackNavEnv(NavEnv):
         )
 
         composite_reward = (
-            goal_reached_reward
-            + linear_speed_reward
-            + laziness_penalty
-            + wall_penalty
-            + flip_penalty
+            goal_reached_reward + linear_speed_reward + laziness_penalty + wall_penalty
         )
 
         # Create a tensor of 0s (future), 1s (current), and 2s (completed)

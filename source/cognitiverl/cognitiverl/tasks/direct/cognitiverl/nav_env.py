@@ -255,17 +255,13 @@ class NavEnv(DirectRLEnv):
             env_ids: A tensor of environment IDs that have been reset.
         """
         if len(env_ids) > 0:
-            # log episode reward
-            self.extras["episode_reward"] = torch.mean(
-                self.episode_reward_buf[env_ids].float()
-            ).item()
             # log episode length
             self.extras["episode_length"] = torch.mean(
                 self.episode_length_buf[env_ids].float()
             ).item()
             # calculate and log completion percentage
             completion_frac = (
-                self.episode_waypoints_passed[env_ids].float() / self._num_goals
+                self._episode_waypoints_passed[env_ids].float() / self._num_goals
             )
             self.extras["success_rate"] = torch.mean(completion_frac).item()
 
