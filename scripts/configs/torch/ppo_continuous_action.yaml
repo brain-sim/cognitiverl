@@ -1,4 +1,4 @@
-task: CognitiveRL-Nav-v2
+task: Leatherback-Nav-v2
 env_cfg_entry_point: env_cfg_entry_point
 num_envs: 64
 seed: 1
@@ -13,7 +13,7 @@ enable_cameras: true
 exp_name: ppo_continuous_action
 torch_deterministic: true
 device: cuda:0
-total_timesteps: 25000
+total_timesteps: 10_000_000
 learning_rate: 0.0003
 num_steps: 64
 anneal_lr: true

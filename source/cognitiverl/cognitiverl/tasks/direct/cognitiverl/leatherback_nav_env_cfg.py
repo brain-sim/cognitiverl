@@ -50,5 +50,5 @@ class LeatherbackNavEnvCfg(NavEnvCfg):
 
     throttle_scale = 20.0
     throttle_max = 500.0
-    steering_scale = 3.0  # Old value: 0.1
+    steering_scale = 0.5  # Old value: 0.1
     steering_max = 3.0  # Old value: 0.75
