@@ -4,37 +4,26 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 from isaaclab.assets import ArticulationCfg
-from isaaclab.envs import DirectRLEnvCfg
-from isaaclab.scene import InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg
 from isaaclab.utils import configclass
 from isaaclab_assets.robots.spot import SPOT_CFG
 
-from .waypoint import WAYPOINT_CFG
+from .nav_env_cfg import NavEnvCfg
 
 
 @configclass
-class SpotNavEnvCfg(DirectRLEnvCfg):
+class SpotNavEnvCfg(NavEnvCfg):
     decimation = 3  # 2
     episode_length_s = 20.0
     action_space = 3
     observation_space = 3076  # Changed from 8 to 9 to include minimum wall distance
 
-    """
-    observation_space = {
-        "state": 6,
-        "image": (32, 32, 3),
-    }
-    """
-    state_space = 0
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 250, render_interval=decimation
     )  # dt=1/250
     robot_cfg: ArticulationCfg = SPOT_CFG.replace(
         prim_path="/World/envs/env_.*/Robot",
     )
-
-    waypoint_cfg = WAYPOINT_CFG
 
     dof_name = [
         "fl_hx",
@@ -51,19 +40,6 @@ class SpotNavEnvCfg(DirectRLEnvCfg):
         "hr_kn",
     ]
 
-    # Scene
-    env_spacing = 40.0
-    scene: InteractiveSceneCfg = InteractiveSceneCfg(
-        num_envs=4096, env_spacing=env_spacing, replicate_physics=True
-    )
-
-    # Scene Properties
-    room_size = 40.0
-    num_goals = 10
-    wall_thickness = 2.0
-    wall_height = 3.0
-    position_tolerance = waypoint_cfg.markers["marker1"].radius
-
     # Reward Coefficients
     goal_reached_bonus = 125.0
     position_progress_weight = 3.0
@@ -73,6 +49,7 @@ class SpotNavEnvCfg(DirectRLEnvCfg):
     laziness_penalty_weight = 1.0
     heading_coefficient = 0.25
     flip_penalty_weight = 100.0
+
     # Laziness
     laziness_decay = 0.99
     laziness_threshold = 8.0

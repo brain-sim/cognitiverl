@@ -35,3 +35,4 @@ measure_burnin: 3
 agent_type: MLPPPOAgent
 compile: true
 cudagraphs: true 
+log_video: false

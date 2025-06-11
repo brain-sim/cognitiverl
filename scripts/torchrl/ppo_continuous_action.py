@@ -9,6 +9,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torchvision
 import tqdm
 import wandb
 
@@ -21,7 +22,7 @@ from utils import load_args, seed_everything
 
 @configclass
 class EnvArgs:
-    task: str = "CognitiveRL-Nav-v2"
+    task: str = "Leatherback-Nav-v0"
     """the id of the environment"""
     env_cfg_entry_point: str = "env_cfg_entry_point"
     """the entry point of the environment configuration"""
@@ -61,7 +62,7 @@ class ExperimentArgs:
     """the id of the environment"""
     total_timesteps: int = 25_000
     """total timesteps of the experiments"""
-    learning_rate: float = 3e-4
+    learning_rate: float = 1e-3
     """the learning rate of the optimizer"""
     num_steps: int = 64
     """the number of steps to run in each environment per policy rollout"""
@@ -77,7 +78,7 @@ class ExperimentArgs:
     """the K epochs to update the policy"""
     norm_adv: bool = False
     """Toggles advantages normalization"""
-    clip_coef: float = 0.2
+    clip_coef: float = 0.25
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
@@ -85,7 +86,7 @@ class ExperimentArgs:
     """coefficient of the entropy"""
     vf_coef: float = 1.0
     """coefficient of the value function"""
-    max_grad_norm: float = 1.0
+    max_grad_norm: float = 10.0
     """the maximum norm for the gradient clipping"""
     target_kl: float = 0.01
     """the target KL divergence threshold"""
@@ -105,12 +106,12 @@ class ExperimentArgs:
 
     checkpoint_interval: int = 10
     """environment steps between saving checkpoints."""
-    play_interval: int = 3
-    """environment steps between playing evaluation episodes during training."""
-    run_play: bool = True
-    """whether to play evaluation episodes during training."""
-    run_best: bool = True
-    """whether to run the best model after training."""
+    # play_interval: int = 3
+    # """environment steps between playing evaluation episodes during training."""
+    # run_play: bool = True
+    # """whether to play evaluation episodes during training."""
+    # run_best: bool = True
+    # """whether to run the best model after training."""
     num_eval_envs: int = 3
     """number of environments to run for evaluation/play."""
     num_eval_env_steps: int = 200
@@ -119,6 +120,8 @@ class ExperimentArgs:
     """number of iterations between logging."""
     log: bool = False
     """whether to log the training process."""
+    log_video: bool = False
+    """whether to log the video."""
 
 
 @configclass
@@ -198,8 +201,10 @@ def make_isaaclab_env(
             if (capture_video and log_dir is not None)
             else None,
         )
+        print_dict({"max_episode_steps": env.unwrapped.max_episode_length}, nesting=4)
         env = IsaacLabRecordEpisodeStatistics(env)
         env = IsaacLabVecEnvWrapper(env, clip_actions=1.0)
+
         if capture_video and log_dir is not None:
             video_kwargs = {
                 "video_folder": os.path.join(log_dir, "videos", "play"),
@@ -291,6 +296,11 @@ def main(args):
     start_time = None
     desc = ""
 
+    if args.log_video:
+        video_frames = []
+        # Randomly choose minimum of 9 environments or all environments
+        indices = torch.randperm(args.num_envs)[: min(9, args.num_envs)].to(device)
+
     for iteration in pbar:
         if iteration == args.measure_burnin:
             global_step_burnin = global_step
@@ -319,7 +329,6 @@ def main(args):
             # next_obs = next_obs_buf["policy"]
             # next_done = torch.logical_or(terminations, truncations).float()
             next_obs, reward, next_done, infos = envs.step(action)
-            rewards[step] = reward.view(-1)
             if "episode" in infos:
                 for r in infos["episode"]["r"]:
                     max_ep_ret = max(max_ep_ret, r)
@@ -329,6 +338,13 @@ def main(args):
                     avg_reward_per_step.append(r)
             if "success_rate" in infos:
                 success_rates.append(infos["success_rate"])
+            if args.log_video:
+                frame = next_obs[indices, : 3 * 32 * 32].reshape(-1, 3, 32, 32)
+                frame = (
+                    torchvision.utils.make_grid(frame, nrow=3, scale_each=True) * 255.0
+                )
+                video_frames.append(frame)
+            rewards[step] = reward.view(-1)
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -414,7 +430,9 @@ def main(args):
 
                 optimizer.zero_grad()
                 loss.backward()
-                gn = nn.utils.clip_grad_norm_(agent.parameters(), args.max_grad_norm)
+                grad_norm = nn.utils.clip_grad_norm_(
+                    agent.parameters(), args.max_grad_norm
+                )
                 optimizer.step()
 
             if args.target_kl is not None and approx_kl > args.target_kl:
@@ -426,30 +444,31 @@ def main(args):
 
         if global_step_burnin is not None and iteration % args.log_interval == 0:
             speed = (global_step - global_step_burnin) / (time.time() - start_time)
-            desc = (
-                f"gl_st={global_step:3.0F}, "
-                + f"ep_ret : avg={torch.tensor(avg_returns).mean():.2f}, max={max_ep_ret:.2f}, "
-                + f"rew_per_step : avg={torch.tensor(avg_reward_per_step).mean():.2f}, max={max_ep_reward:.2f}"
-            )
-            pbar.set_description(f"spd(sps): {speed:3.1f}, " + desc)
+            desc = f"gl_st={global_step:3.0F}, "
             with torch.no_grad():
                 logs = {
-                    "episode_return": np.array(avg_returns).mean()
-                    if len(avg_returns) > 0
-                    else 0,
                     "logprobs": b_logprobs.mean(),
                     "advantages": advantages.mean(),
-                    "returns": returns.mean(),
                     "values": values.mean(),
-                    "returns_max": max_ep_ret,
-                    "gn": gn,
+                    "grad_norm": grad_norm,
                     "explained_var": explained_var,
                     "old_approx_kl": old_approx_kl,
                     "approx_kl": approx_kl,
                 }
-                if "success_rate" in infos:
+                if len(avg_returns) > 0:
+                    logs["avg_episode_return"] = torch.tensor(avg_returns).mean()
+                    logs["max_episode_return"] = max_ep_ret
+                    desc += f"ep_ret : avg={torch.tensor(avg_returns).mean():.2f}, max={max_ep_ret:.2f}, "
+                if len(avg_reward_per_step) > 0:
+                    logs["avg_step_reward"] = torch.tensor(avg_reward_per_step).mean()
+                    logs["max_step_reward"] = (
+                        torch.tensor(avg_reward_per_step).max().item()
+                    )
+                    desc += f"rew_per_step : avg={torch.tensor(avg_reward_per_step).mean():.2f}, max={max_ep_reward:.2f}"
+                if len(success_rates) > 0:
                     logs["success_rate"] = torch.tensor(success_rates).mean()
                 success_rates, avg_reward_per_step, avg_returns = [], [], []
+            pbar.set_description(f"spd(sps): {speed:3.1f}, " + desc)
             wandb.log(
                 {
                     "speed": speed,
@@ -458,6 +477,22 @@ def main(args):
                 step=global_step,
             )
 
+            if args.log_video and len(video_frames) > 0:
+                video_tensor = torch.stack(video_frames)
+                wandb.log(
+                    {
+                        "obs_grid_video": wandb.Video(
+                            video_tensor.detach().cpu().numpy().astype(np.uint8),
+                            fps=25,
+                            format="mp4",
+                        )
+                    },
+                    step=global_step,
+                )
+                video_frames = []
+                indices = torch.randperm(args.num_envs)[: min(9, args.num_envs)].to(
+                    device
+                )
         # save every checkpoint_interval steps
         if global_step_burnin is not None and iteration % args.checkpoint_interval == 0:
             ckpt_path = os.path.join(ckpt_dir, f"ckpt_{global_step}.pt")

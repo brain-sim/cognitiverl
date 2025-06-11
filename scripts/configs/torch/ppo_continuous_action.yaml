@@ -34,9 +34,7 @@ num_iterations: 0
 measure_burnin: 3
 agent_type: CNNPPOAgent
 checkpoint_interval: 1
-play_interval: 3
-run_play: true
-run_best: true
 num_eval_envs: 3
 num_eval_env_steps: 200
-log: false 
+log: false
+log_video: false

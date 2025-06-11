@@ -17,21 +17,10 @@ from . import agents
 
 gym.register(
     id="Leatherback-Nav-v0",
-    entry_point=f"{__name__}.nav_env_v0:NavEnv",
+    entry_point=f"{__name__}.leatherback_nav_env:LeatherbackNavEnv",
     disable_env_checker=True,
     kwargs={
-        "env_cfg_entry_point": f"{__name__}.nav_env_v0:NavEnvCfg",
-        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
-    },
-)
-
-gym.register(
-    id="Leatherback-Nav-v1",
-    entry_point=f"{__name__}.nav_env_v1:NavEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.nav_env_v1:NavEnvCfg",
-        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
+        "env_cfg_entry_point": f"{__name__}.leatherback_nav_env_cfg:LeatherbackNavEnvCfg",
     },
 )
 
@@ -41,21 +30,8 @@ gym.register(
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.nav_env_v2:NavEnvCfg",
-        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
     },
 )
-
-gym.register(
-    id="Leatherback-Nav-v3",
-    entry_point=f"{__name__}.nav_env_v3:NavEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.nav_env_v3:NavEnvCfg",
-        "skrl_cfg_entry_point": f"{agents.__name__}:skrl_ppo_cfg.yaml",
-        "sb3_cfg_entry_point": f"{agents.__name__}:sb3_ppo_cfg.yaml",
-    },
-)
-
 
 gym.register(
     id="Spot-Nav-v0",

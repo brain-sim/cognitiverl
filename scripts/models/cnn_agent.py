@@ -48,7 +48,7 @@ class CNNPPOAgent(nn.Module):
         )
 
         # Critic head
-        self.critic = layer_init(nn.Linear(64, 1), std=1.0)
+        self.critic = layer_init(nn.Linear(64, 1), std=0.0, bias_const=0.0)
 
         # Actor head (mean) and log std parameter
         self.actor_mean = layer_init(nn.Linear(64, n_act), std=1.0)
