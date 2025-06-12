@@ -33,6 +33,8 @@ class NavEnvCfg(DirectRLEnvCfg):
         num_envs=4096, env_spacing=env_spacing, replicate_physics=True
     )
     waypoint_cfg = WAYPOINT_CFG
+    static_friction = 1.0
+    dynamic_friction = 1.0
 
     # Wall parameters
     room_size = 40.0

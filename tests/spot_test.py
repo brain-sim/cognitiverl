@@ -105,12 +105,12 @@ except ImportError:
 
 # Keyboard mapping: (forward, left, yaw)
 KEYBOARD_MAPPING = {
-    "w": (10.0, 0.0, 0.0),  # forward
+    "w": (20.0, 0.0, 0.0),  # forward
     "s": (-5.0, 0.0, 0.0),  # backward
-    "a": (0.0, 3.0, 0.0),  # left
-    "d": (0.0, -3.0, 0.0),  # right
-    "q": (0.0, 0.0, 3.0),  # yaw left
-    "e": (0.0, 0.0, -3.0),  # yaw right
+    "a": (0.0, 2.0, 0.0),  # left
+    "d": (0.0, -2.0, 0.0),  # right
+    "q": (0.0, 0.0, 2.0),  # yaw left
+    "e": (0.0, 0.0, -2.0),  # yaw right
 }
 
 action = None
@@ -174,6 +174,7 @@ def main():
             action.zero_()
         else:
             step_action = torch.zeros_like(action)
+        print(step_action)
         _, reward, _, _, _ = env.step(step_action)
         # Optionally, add a small sleep to avoid maxing out CPU
         # import time; time.sleep(0.02)

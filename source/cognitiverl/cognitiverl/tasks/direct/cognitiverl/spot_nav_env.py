@@ -92,7 +92,7 @@ class SpotNavEnv(NavEnv):
             dtype=torch.float32,
         )
         self._default_pos = self.robot.data.default_joint_pos.clone()
-        self._smoothing_factor = 0.5
+        self._smoothing_factor = 0.3
 
     def _setup_camera(self):
         camera_prim_path = "/World/envs/env_.*/Robot/body/Camera"
@@ -128,8 +128,14 @@ class SpotNavEnv(NavEnv):
         self._actions = actions.clone()
         self._actions = self._actions * self.action_scale
         self._actions = torch.nan_to_num(self._actions, 0.0)
-        self._actions = torch.clamp(
-            self._actions, min=-self.action_max, max=self.action_max
+        self._actions[:, 0] = torch.clamp(
+            self._actions[:, 0], min=-2.0, max=self.cfg.throttle_max
+        )
+        self._actions[:, 1] = torch.clamp(
+            self._actions[:, 1], min=-self.cfg.steering_max, max=self.cfg.steering_max
+        )
+        self._actions[:, 2] = torch.clamp(
+            self._actions[:, 2], min=-self.cfg.steering_max, max=self.cfg.steering_max
         )
         self._action_state = self._actions.clone()
 
@@ -211,7 +217,8 @@ class SpotNavEnv(NavEnv):
 
         # Update accumulated laziness with decay
         self._accumulated_laziness = (
-            self._accumulated_laziness * self.laziness_decay + current_laziness
+            self._accumulated_laziness * self.laziness_decay
+            + current_laziness * (1 - self.laziness_decay)
         )
         # Clamp to prevent extreme values
         self._accumulated_laziness = torch.clamp(

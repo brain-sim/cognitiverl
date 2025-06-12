@@ -13,17 +13,20 @@ from .nav_env_cfg import NavEnvCfg
 
 @configclass
 class SpotNavEnvCfg(NavEnvCfg):
-    decimation = 3  # 2
-    episode_length_s = 20.0
+    decimation = 5  # 2
+    episode_length_s = 60.0
     action_space = 3
     observation_space = 3076  # Changed from 8 to 9 to include minimum wall distance
 
     sim: SimulationCfg = SimulationCfg(
-        dt=1 / 250, render_interval=decimation
+        dt=1 / 500, render_interval=decimation
     )  # dt=1/250
     robot_cfg: ArticulationCfg = SPOT_CFG.replace(
         prim_path="/World/envs/env_.*/Robot",
     )
+
+    static_friction = 10.0
+    dynamic_friction = 10.0
 
     dof_name = [
         "fl_hx",
@@ -55,4 +58,5 @@ class SpotNavEnvCfg(NavEnvCfg):
 
     # Action Scaling
     action_scale = 1.0
-    action_max = 5.0
+    throttle_max = 20.0
+    steering_max = 3.0
