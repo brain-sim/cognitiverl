@@ -85,7 +85,8 @@ class SpotNavEnv(NavEnv):
         self.wall_penalty_weight = self.cfg.wall_penalty_weight
         self.linear_speed_weight = self.cfg.linear_speed_weight
         self.action_scale = self.cfg.action_scale
-        self.action_max = self.cfg.action_max
+        self.throttle_max = self.cfg.throttle_max
+        self.steering_max = self.cfg.steering_max
         self._action_state = torch.zeros(
             (self.num_envs, self.cfg.action_space),
             device=self.device,
@@ -129,13 +130,13 @@ class SpotNavEnv(NavEnv):
         self._actions = self._actions * self.action_scale
         self._actions = torch.nan_to_num(self._actions, 0.0)
         self._actions[:, 0] = torch.clamp(
-            self._actions[:, 0], min=-2.0, max=self.cfg.throttle_max
+            self._actions[:, 0], min=-2.0, max=self.throttle_max
         )
         self._actions[:, 1] = torch.clamp(
-            self._actions[:, 1], min=-self.cfg.steering_max, max=self.cfg.steering_max
+            self._actions[:, 1], min=-self.steering_max, max=self.steering_max
         )
         self._actions[:, 2] = torch.clamp(
-            self._actions[:, 2], min=-self.cfg.steering_max, max=self.cfg.steering_max
+            self._actions[:, 2], min=-self.steering_max, max=self.steering_max
         )
         self._action_state = self._actions.clone()
 

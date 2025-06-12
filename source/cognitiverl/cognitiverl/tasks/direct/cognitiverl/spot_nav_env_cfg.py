@@ -14,7 +14,7 @@ from .nav_env_cfg import NavEnvCfg
 @configclass
 class SpotNavEnvCfg(NavEnvCfg):
     decimation = 5  # 2
-    episode_length_s = 60.0
+    episode_length_s = 10.0
     action_space = 3
     observation_space = 3076  # Changed from 8 to 9 to include minimum wall distance
 
