@@ -22,6 +22,7 @@ import sys
 import gymnasium as gym
 import torch
 from isaaclab.app import AppLauncher
+from pynput import keyboard
 
 """Rest everything follows."""
 
@@ -112,6 +113,40 @@ KEYBOARD_MAPPING = {
     "e": (0.0, 0.0, -3.0),  # yaw right
 }
 
+action = None
+exit_flag = False
+key_pressed = False
+
+
+def on_press(key):
+    global action, exit_flag, key_pressed
+    try:
+        k = key.char.lower()
+        if k == "x":
+            print("[INFO]: Exiting...")
+            exit_flag = True
+            return False  # Stop listener
+        elif k in KEYBOARD_MAPPING:
+            delta = torch.tensor(KEYBOARD_MAPPING[k], dtype=torch.float32)
+            action[:3] = delta
+            key_pressed = True
+            print(f"[DEBUG]: Action updated: {action.tolist()}")
+        elif k == " ":
+            action.zero_()
+            key_pressed = True
+            print("[DEBUG]: Action reset to zero.")
+        elif k == "r":
+            action.zero_()
+            key_pressed = True
+            print("[DEBUG]: Environment reset.")
+    except AttributeError:
+        pass
+
+
+def start_keyboard_listener():
+    listener = keyboard.Listener(on_press=on_press)
+    listener.start()
+
 
 def main():
     """Main function."""
@@ -124,35 +159,24 @@ def main():
         False,
     )()
     print("[INFO]: Environment Spot Nav has been created.")
+    global action, key_pressed
     obs, _ = env.reset()
     action = torch.zeros(env.action_space.shape, dtype=torch.float32)
     print(
         "[INFO]: Use WASD to move, Q/E to yaw. Press 'x' to exit, 'r' to reset, space to zero action."
     )
 
-    i = 0
-    while True:
-        env.step(torch.zeros(env.action_space.shape, dtype=torch.float32))
-        key = get_key()
-        if key == "x":
-            print("[INFO]: Exiting...")
-            break
-        if key in KEYBOARD_MAPPING:
-            delta = torch.tensor(KEYBOARD_MAPPING[key], dtype=torch.float32)
-            action[:3] = delta
-            action[:3].clip_(min=-10.0, max=10.0)
-            print(f"[DEBUG]: Action updated: {action.tolist()}")
-            for _ in range(3):
-                _, reward, _, _, _ = env.step(action.clone())
-                i += 1
-        elif key == " ":
+    start_keyboard_listener()
+    while not exit_flag:
+        if key_pressed:
+            step_action = action.clone()
+            key_pressed = False
             action.zero_()
-            _, reward, _, _, _ = env.step(action.clone())
-            print("[DEBUG]: Action reset to zero.")
-        elif key == "r":
-            obs, _ = env.reset()
-            action.zero_()
-            print("[DEBUG]: Environment reset.")
+        else:
+            step_action = torch.zeros_like(action)
+        _, reward, _, _, _ = env.step(step_action)
+        # Optionally, add a small sleep to avoid maxing out CPU
+        # import time; time.sleep(0.02)
     env.close()
 
 
