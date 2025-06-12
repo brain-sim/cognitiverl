@@ -203,6 +203,7 @@ class SpotNavEnv(NavEnv):
             neginf=0.0,
         )
         self._target_index = self._target_index + goal_reached
+        self._episode_waypoints_passed += goal_reached.int()
         self.task_completed = self._target_index > (self._num_goals - 1)
         self._target_index = self._target_index % self._num_goals
 

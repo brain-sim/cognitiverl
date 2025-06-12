@@ -43,6 +43,10 @@ class SpotNavEnvCfg(NavEnvCfg):
         "hr_kn",
     ]
 
+    room_size = 20.0
+    env_spacing = 20.0
+    num_goals = 1
+
     # Reward Coefficients
     goal_reached_bonus = 125.0
     position_progress_weight = 3.0
