@@ -20,11 +20,11 @@ class CNNPPOAgent(nn.Module):
         self.img_size = (channels, height, width)
 
         # Load and adapt MobileNetV3-small backbone
-        backbone = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.DEFAULT)
-        backbone.eval()  # freeze backbone in eval mode
+        self.backbone = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.DEFAULT)
+        self.backbone.eval()  # freeze backbone in eval mode
 
         # Adjust first conv layer for 32x32 inputs
-        backbone.features[0][0] = nn.Conv2d(
+        self.backbone.features[0][0] = nn.Conv2d(
             in_channels=channels,
             out_channels=16,
             kernel_size=3,
@@ -32,16 +32,16 @@ class CNNPPOAgent(nn.Module):
             padding=1,
             bias=False,
         )
-        self.backbone = nn.Sequential(*backbone.features)
+        self.backbone = nn.Sequential(*list(self.backbone.features))
 
         # Determine feature dimension
         with torch.no_grad():
             dummy = torch.zeros(1, channels, height, width)
-            feat_dim = self.backbone(dummy).view(1, -1).size(1)
+            feature_size = self.backbone(dummy).view(1, -1).size(1)
 
         # MLP for extracted features
         self.feature_net = nn.Sequential(
-            layer_init(nn.Linear(feat_dim, 128)),
+            layer_init(nn.Linear(feature_size, 128)),
             nn.ELU(),
             layer_init(nn.Linear(128, 64)),
             nn.ELU(),

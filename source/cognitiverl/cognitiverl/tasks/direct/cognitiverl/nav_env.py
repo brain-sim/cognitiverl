@@ -57,6 +57,9 @@ class NavEnv(DirectRLEnv):
         self._episode_waypoints_passed = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.int32
         )
+        self._episode_reward_buf = torch.zeros(
+            (self.num_envs), device=self.device, dtype=torch.float32
+        )
 
         self._debug = debug
         self._setup_config()
@@ -264,6 +267,10 @@ class NavEnv(DirectRLEnv):
                 self._episode_waypoints_passed[env_ids].float() / self._num_goals
             )
             self.extras["success_rate"] = torch.mean(completion_frac).item()
+            # log episode reward
+            self.extras["episode_reward"] = torch.mean(
+                self._episode_reward_buf[env_ids].float()
+            ).item()
 
     def step(self, action: torch.Tensor) -> VecEnvStepReturn:
         """Execute one time-step of the environment's dynamics.
