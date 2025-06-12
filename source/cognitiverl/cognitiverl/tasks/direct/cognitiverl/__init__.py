@@ -25,15 +25,6 @@ gym.register(
 )
 
 gym.register(
-    id="Leatherback-Nav-v2",
-    entry_point=f"{__name__}.nav_env_v2:NavEnv",
-    disable_env_checker=True,
-    kwargs={
-        "env_cfg_entry_point": f"{__name__}.nav_env_v2:NavEnvCfg",
-    },
-)
-
-gym.register(
     id="Spot-Nav-v0",
     entry_point=f"{__name__}.spot_nav_env:SpotNavEnv",
     disable_env_checker=True,
