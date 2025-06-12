@@ -43,12 +43,10 @@ class SpotNavEnvCfg(NavEnvCfg):
     # Reward Coefficients
     goal_reached_bonus = 125.0
     position_progress_weight = 3.0
-    heading_progress_weight = 0.5
-    wall_penalty_weight = 10.0
+    wall_penalty_weight = 0.2
     linear_speed_weight = 0.05
-    laziness_penalty_weight = 1.0
-    heading_coefficient = 0.25
-    flip_penalty_weight = 100.0
+    laziness_penalty_weight = 0.3
+    # flip_penalty_weight = 100.0
 
     # Laziness
     laziness_decay = 0.99
@@ -56,5 +54,5 @@ class SpotNavEnvCfg(NavEnvCfg):
     max_laziness = 10.0
 
     # Action Scaling
-    action_scale = 3.0
-    action_max = 3.0
+    action_scale = 1.0
+    action_max = 5.0

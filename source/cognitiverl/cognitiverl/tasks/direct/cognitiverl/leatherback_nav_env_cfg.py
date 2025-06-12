@@ -36,8 +36,6 @@ class LeatherbackNavEnvCfg(NavEnvCfg):
 
     # Reward Coefficients (updated to navigation robot)
     goal_reached_bonus = 125.0
-    position_progress_weight = 3.0
-    heading_progress_weight = 0.5
     wall_penalty_weight = 0.2
     linear_speed_weight = 0.05
     laziness_penalty_weight = 0.3

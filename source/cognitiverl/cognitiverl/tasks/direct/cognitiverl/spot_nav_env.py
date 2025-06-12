@@ -72,10 +72,7 @@ class SpotNavEnv(NavEnv):
         )
         self.position_tolerance = self.cfg.position_tolerance
         self.goal_reached_bonus = self.cfg.goal_reached_bonus
-        self.heading_progress_weight = self.cfg.heading_progress_weight
-        self.heading_coefficient = self.cfg.heading_coefficient
         self.laziness_penalty_weight = self.cfg.laziness_penalty_weight
-        self.position_progress_weight = self.cfg.position_progress_weight
         self.laziness_decay = (
             self.cfg.laziness_decay
         )  # How much previous laziness carries over
@@ -87,7 +84,6 @@ class SpotNavEnv(NavEnv):
         )  # Cap on accumulated laziness to prevent extreme penalties
         self.wall_penalty_weight = self.cfg.wall_penalty_weight
         self.linear_speed_weight = self.cfg.linear_speed_weight
-        self.flip_penalty_weight = self.cfg.flip_penalty_weight
         self.action_scale = self.cfg.action_scale
         self.action_max = self.cfg.action_max
         self._action_state = torch.zeros(
@@ -189,19 +185,6 @@ class SpotNavEnv(NavEnv):
         )
 
     def _get_rewards(self) -> torch.Tensor:
-        # position_progress_reward = (
-        #     torch.nan_to_num(
-        #         self._previous_position_error - self._position_error,
-        #         posinf=0.0,
-        #         neginf=0.0,
-        #     )
-        #     * self.position_progress_weight
-        # )
-        # target_heading_reward = self.heading_progress_weight * torch.nan_to_num(
-        #     torch.exp(-torch.abs(self.target_heading_error) / self.heading_coefficient),
-        #     posinf=0.0,
-        #     neginf=0.0,
-        # )
         goal_reached = self._position_error < self.position_tolerance
         goal_reached_reward = self.goal_reached_bonus * torch.nan_to_num(
             torch.where(
@@ -269,7 +252,7 @@ class SpotNavEnv(NavEnv):
         # Add wall distance penalty
         min_wall_dist = self._get_distance_to_walls()
         danger_distance = (
-            self.wall_thickness / 2 + 2.0
+            self.wall_thickness / 2 + 5.0
         )  # Distance at which to start penalizing
         wall_penalty = torch.nan_to_num(
             torch.where(
@@ -284,22 +267,14 @@ class SpotNavEnv(NavEnv):
             neginf=0.0,
         )
         linear_speed_reward = self.linear_speed_weight * torch.nan_to_num(
-            linear_speed * 0.9 + self.previous_linear_speed * 0.1,
+            linear_speed,
             posinf=0.0,
             neginf=0.0,
         )
         self.previous_linear_speed = linear_speed.clone()
-        time_penalty = -torch.ones_like(laziness_penalty)
-        flip_penalty = -self.flip_penalty_weight * self._vehicle_flipped
+        # flip_penalty = -self.flip_penalty_weight * self._vehicle_flipped
         composite_reward = (
-            goal_reached_reward
-            + linear_speed_reward
-            + laziness_penalty
-            + wall_penalty
-            + time_penalty
-            + flip_penalty
-            # + position_progress_reward
-            # + target_heading_reward
+            goal_reached_reward + linear_speed_reward + laziness_penalty + wall_penalty
         )
 
         if self._debug and self._debug_counter % 100 == 0:

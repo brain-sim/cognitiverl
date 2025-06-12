@@ -13,8 +13,6 @@ class LeatherbackNavEnv(NavEnv):
     def _setup_config(self):
         self.position_tolerance = self.cfg.position_tolerance
         self.goal_reached_bonus = self.cfg.goal_reached_bonus
-        self.position_progress_weight = self.cfg.position_progress_weight
-        self.heading_progress_weight = self.cfg.heading_progress_weight
         self.wall_penalty_weight = self.cfg.wall_penalty_weight
         self.linear_speed_weight = self.cfg.linear_speed_weight
         self.laziness_penalty_weight = self.cfg.laziness_penalty_weight
