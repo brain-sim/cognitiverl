@@ -83,15 +83,15 @@ class SpotNavEnv(NavEnv):
         )  # Cap on accumulated laziness to prevent extreme penalties
         self.wall_penalty_weight = self.cfg.wall_penalty_weight
         self.linear_speed_weight = self.cfg.linear_speed_weight
-        self.throttle_scale = self.cfg.throttle_scale
         self._actions = torch.zeros(
             (self.num_envs, self.cfg.action_space),
             device=self.device,
             dtype=torch.float32,
         )
-        self.steering_scale = self.cfg.steering_scale
         self.throttle_max = self.cfg.throttle_max
         self.steering_max = self.cfg.steering_max
+        self.throttle_min = self.cfg.throttle_min
+        self.steering_min = self.cfg.steering_min
         self._default_pos = self.robot.data.default_joint_pos.clone()
         self._smoothing_factor = torch.tensor([0.75, 0.3, 0.3], device=self.device)
         self.max_episode_length_buf = torch.full(
@@ -131,13 +131,13 @@ class SpotNavEnv(NavEnv):
         self._previous_action = actions.clone()
         self._actions = actions.clone()
         self._actions = torch.nan_to_num(self._actions, 0.0)
-        self._actions[:, 0] = self._actions[:, 0] * self.throttle_scale
-        self._actions[:, 1:] = self._actions[:, 1:] * self.steering_scale
-        self._actions[:, 0] = torch.clamp(
-            self._actions[:, 0], min=0.0, max=self.throttle_max
+        self._actions[:, 0] = (
+            0.5 * (self._actions[:, 0] + 1) * (self.throttle_max - self.throttle_min)
+            + self.throttle_min
         )
-        self._actions[:, 1:] = torch.clamp(
-            self._actions[:, 1:], min=-self.steering_max, max=self.steering_max
+        self._actions[:, 1:] = (
+            0.5 * (self._actions[:, 1:] + 1) * (self.steering_max - self.steering_min)
+            + self.steering_min
         )
 
     def _apply_action(self) -> None:
@@ -291,12 +291,18 @@ class SpotNavEnv(NavEnv):
             posinf=0.0,
             neginf=0.0,
         )
+        flip_penalty = torch.where(
+            self._vehicle_flipped,
+            -self.goal_reached_bonus,
+            torch.zeros_like(goal_reached_reward),
+        )
         composite_reward = (
             goal_reached_reward
             # + linear_speed_reward
             # + laziness_penalty
             + wall_penalty
             + fast_goal_reached_reward
+            + flip_penalty
         )
 
         if self._debug:

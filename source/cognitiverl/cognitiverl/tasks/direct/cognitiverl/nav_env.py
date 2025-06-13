@@ -65,10 +65,6 @@ class NavEnv(DirectRLEnv):
         self._debug = debug
         self._setup_config()
 
-        if max_total_steps is None:
-            raise ValueError(
-                "max_total_steps must be provided (from total_timesteps in PPO script)"
-            )
         self.max_total_steps = max_total_steps
 
     def _setup_config(self):
@@ -494,20 +490,28 @@ class NavEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
         self.camera.reset(env_ids)
-        min_episode_length = min(
-            max(
-                50
-                + int(0.8 * self.max_episode_length * self.common_step_counter / self.max_total_steps),
-                int(0.8 * self.max_episode_length),
-            ),
-            self.max_episode_length,
-        )
-        self.max_episode_length_buf[env_ids] = torch.randint(
-            min_episode_length,
-            self.max_episode_length + 1,
-            (len(env_ids),),
-            device=self.device,
-        )
+        if self.max_total_steps is None:
+            self.max_episode_length_buf[env_ids] = self.max_episode_length
+        else:
+            min_episode_length = min(
+                max(
+                    50
+                    + int(
+                        0.8
+                        * self.max_episode_length
+                        * self.common_step_counter
+                        / self.max_total_steps
+                    ),
+                    int(0.8 * self.max_episode_length),
+                ),
+                self.max_episode_length,
+            )
+            self.max_episode_length_buf[env_ids] = torch.randint(
+                min_episode_length,
+                self.max_episode_length + 1,
+                (len(env_ids),),
+                device=self.device,
+            )
 
         self._episode_waypoints_passed[env_ids] = 0
         if hasattr(self, "_previous_waypoint_reached_step"):

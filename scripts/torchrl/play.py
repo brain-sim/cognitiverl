@@ -194,7 +194,7 @@ def main(args):
             pbar.update(1)
             pbar.set_description(f"step: {step}")
         eval_envs.close()
-
+        print(eval_envs.video_name)
         if args.capture_video:
             wandb.log(
                 {

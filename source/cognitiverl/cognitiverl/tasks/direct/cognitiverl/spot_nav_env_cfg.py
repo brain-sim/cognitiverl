@@ -62,7 +62,7 @@ class SpotNavEnvCfg(NavEnvCfg):
     max_laziness = 10.0
 
     # Action Scaling
-    throttle_scale = 3.0
-    steering_scale = 2.0
     throttle_max = 9.0
     steering_max = 6.0
+    throttle_min = 0
+    steering_min = -steering_max

@@ -48,10 +48,13 @@ class CNNPPOAgent(nn.Module):
         )
 
         # Critic head
-        self.critic = layer_init(nn.Linear(64, 1), std=0.0)
+        self.critic = layer_init(nn.Linear(64, 1), std=1.0)
 
         # Actor head (mean) and log std parameter
-        self.actor_mean = layer_init(nn.Linear(64, n_act), std=0.0)
+        self.actor_mean = nn.Sequential(
+            layer_init(nn.Linear(64, n_act, bias=False), std=0.1),
+            nn.Tanh(),
+        )
         self.actor_logstd = nn.Parameter(torch.zeros(1, n_act))
 
     def extract_image(self, x: torch.Tensor) -> torch.Tensor:
@@ -89,4 +92,4 @@ class CNNPPOAgent(nn.Module):
         entropy = dist.entropy().sum(dim=1)
         value = self.critic(h).view(-1)
 
-        return action, logprob, entropy, value
+        return action.clamp_(-1, 1), logprob, entropy, value
