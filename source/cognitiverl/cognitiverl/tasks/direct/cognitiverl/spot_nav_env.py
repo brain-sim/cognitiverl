@@ -47,7 +47,6 @@ class SpotNavEnv(NavEnv):
         self._accumulated_laziness = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.float32
         )
-
         self._debug = debug
 
     def _setup_robot_dof_idx(self):
@@ -67,8 +66,8 @@ class SpotNavEnv(NavEnv):
             device=self.device,
             dtype=torch.float32,
         )
-        self.previous_linear_speed = torch.zeros(
-            (self.num_envs), device=self.device, dtype=torch.float32
+        self._previous_waypoint_reached_step = torch.zeros(
+            (self.num_envs), device=self.device, dtype=torch.int32
         )
         self.position_tolerance = self.cfg.position_tolerance
         self.goal_reached_bonus = self.cfg.goal_reached_bonus
@@ -84,16 +83,20 @@ class SpotNavEnv(NavEnv):
         )  # Cap on accumulated laziness to prevent extreme penalties
         self.wall_penalty_weight = self.cfg.wall_penalty_weight
         self.linear_speed_weight = self.cfg.linear_speed_weight
-        self.action_scale = self.cfg.action_scale
-        self.throttle_max = self.cfg.throttle_max
-        self.steering_max = self.cfg.steering_max
-        self._action_state = torch.zeros(
+        self.throttle_scale = self.cfg.throttle_scale
+        self._actions = torch.zeros(
             (self.num_envs, self.cfg.action_space),
             device=self.device,
             dtype=torch.float32,
         )
+        self.steering_scale = self.cfg.steering_scale
+        self.throttle_max = self.cfg.throttle_max
+        self.steering_max = self.cfg.steering_max
         self._default_pos = self.robot.data.default_joint_pos.clone()
-        self._smoothing_factor = 0.3
+        self._smoothing_factor = torch.tensor([0.75, 0.3, 0.3], device=self.device)
+        self.max_episode_length_buf = torch.full(
+            (self.num_envs,), self.max_episode_length, device=self.device
+        )
 
     def _setup_camera(self):
         camera_prim_path = "/World/envs/env_.*/Robot/body/Camera"
@@ -107,7 +110,7 @@ class SpotNavEnv(NavEnv):
         )
         camera_cfg = TiledCameraCfg(
             prim_path=camera_prim_path,
-            update_period=0.0025,
+            update_period=self.step_dt,
             height=32,
             width=32,
             data_types=["rgb"],
@@ -127,24 +130,20 @@ class SpotNavEnv(NavEnv):
         )
         self._previous_action = actions.clone()
         self._actions = actions.clone()
-        self._actions = self._actions * self.action_scale
         self._actions = torch.nan_to_num(self._actions, 0.0)
+        self._actions[:, 0] = self._actions[:, 0] * self.throttle_scale
+        self._actions[:, 1:] = self._actions[:, 1:] * self.steering_scale
         self._actions[:, 0] = torch.clamp(
-            self._actions[:, 0], min=-2.0, max=self.throttle_max
+            self._actions[:, 0], min=0.0, max=self.throttle_max
         )
-        self._actions[:, 1] = torch.clamp(
-            self._actions[:, 1], min=-self.steering_max, max=self.steering_max
+        self._actions[:, 1:] = torch.clamp(
+            self._actions[:, 1:], min=-self.steering_max, max=self.steering_max
         )
-        self._actions[:, 2] = torch.clamp(
-            self._actions[:, 2], min=-self.steering_max, max=self.steering_max
-        )
-        self._action_state = self._actions.clone()
 
     def _apply_action(self) -> None:
         # --- Vectorized low-level Spot policy call for all environments ---
         # Gather all required robot state as torch tensors
         # TODO: Replace the following with actual command logic per environment
-        previous_action = self._low_level_previous_action  # [num_envs, 12]
         default_pos = self._default_pos.clone()  # [num_envs, 12]
         # The following assumes your robot exposes these as torch tensors of shape [num_envs, ...]
         lin_vel_I = self.robot.data.root_lin_vel_w  # [num_envs, 3]
@@ -158,7 +157,7 @@ class SpotNavEnv(NavEnv):
             ang_vel_I,
             q_IB,
             self._actions,
-            previous_action,
+            self._low_level_previous_action,
             default_pos,
             joint_pos,
             joint_vel,
@@ -180,12 +179,9 @@ class SpotNavEnv(NavEnv):
         return torch.cat(
             (
                 image_obs,
-                # self._position_error.unsqueeze(dim=1),
-                # torch.cos(self.target_heading_error).unsqueeze(dim=1),
-                # torch.sin(self.target_heading_error).unsqueeze(dim=1),
-                self._action_state[:, 0].unsqueeze(dim=1),
-                self._action_state[:, 1].unsqueeze(dim=1),
-                self._action_state[:, 2].unsqueeze(dim=1),
+                self._actions[:, 0].unsqueeze(dim=1),
+                self._actions[:, 1].unsqueeze(dim=1),
+                self._actions[:, 2].unsqueeze(dim=1),
                 self._get_distance_to_walls().unsqueeze(dim=1),  # Add wall distance
             ),
             dim=-1,
@@ -206,6 +202,33 @@ class SpotNavEnv(NavEnv):
         self._episode_waypoints_passed += goal_reached.int()
         self.task_completed = self._target_index > (self._num_goals - 1)
         self._target_index = self._target_index % self._num_goals
+        assert (
+            self._previous_waypoint_reached_step[goal_reached.int()]
+            < self.episode_length_buf[goal_reached.int()]
+        ).all(), "Previous waypoint reached step is greater than episode length"
+        # max_reward = 125.0
+        # epsilon = 1.0  # reward at max episode length
+        # max_steps = self.max_episode_length  # should be a scalar
+
+        # Compute k using torch.log
+        k = torch.log(torch.tensor(125.0, device=self.device)) / (
+            self.max_episode_length - 1
+        )
+        steps_taken = self.episode_length_buf - self._previous_waypoint_reached_step
+
+        fast_goal_reached_reward = torch.where(
+            goal_reached,
+            125.0 * torch.exp(-k * (steps_taken - 1)),
+            torch.zeros_like(self._previous_waypoint_reached_step),
+        )
+        fast_goal_reached_reward = torch.clamp(
+            fast_goal_reached_reward, min=0.0, max=125.0
+        )
+        self._previous_waypoint_reached_step = torch.where(
+            goal_reached,
+            self.episode_length_buf,
+            self._previous_waypoint_reached_step,
+        )
 
         # Calculate current laziness based on speed
         linear_speed = torch.norm(
@@ -246,18 +269,6 @@ class SpotNavEnv(NavEnv):
             self._debug_counter = 0
         self._debug_counter += 1
 
-        if self._debug and self._debug_counter % 100 == 0:
-            with torch.no_grad():
-                debug_size = 5
-                print("\nLaziness Debug (Step {}):".format(self._debug_counter))
-                for i in range(min(debug_size, self.num_envs)):
-                    print(f"Env {i}:")
-                    print(f"  Current speed: {linear_speed[i]:.3f}")
-                    print(
-                        f"  Accumulated laziness: {self._accumulated_laziness[i]:.3f}"
-                    )
-                    print(f"  Laziness penalty: {laziness_penalty[i]:.3f}")
-
         # Add wall distance penalty
         min_wall_dist = self._get_distance_to_walls()
         danger_distance = (
@@ -280,18 +291,18 @@ class SpotNavEnv(NavEnv):
             posinf=0.0,
             neginf=0.0,
         )
-        self.previous_linear_speed = linear_speed.clone()
-        # flip_penalty = -self.flip_penalty_weight * self._vehicle_flipped
         composite_reward = (
-            goal_reached_reward + linear_speed_reward + laziness_penalty + wall_penalty
+            goal_reached_reward
+            # + linear_speed_reward
+            # + laziness_penalty
+            + wall_penalty
+            + fast_goal_reached_reward
         )
 
-        if self._debug and self._debug_counter % 100 == 0:
+        if self._debug:
             print("=" * 100)
             print(f"Goal reached: {goal_reached[0].item()}")
             print(f"Goal Reward: {goal_reached_reward[0].item()}")
-            # print(f"Position progress reward: {position_progress_reward[0].item()}")
-            # print(f"Target heading reward: {target_heading_reward[0].item()}")
             print(f"Linear speed reward: {linear_speed[0].item()}")
             print(f"Laziness penalty: {laziness_penalty[0].item()}")
             print(f"Wall penalty: {wall_penalty[0].item()}")

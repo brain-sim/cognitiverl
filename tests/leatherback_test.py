@@ -178,8 +178,11 @@ def main():
         else:
             step_action = torch.zeros_like(action)
         _, reward, _, _, _ = env.step(step_action)
+
         # Optionally, add a small sleep to avoid maxing out CPU
-        # import time; time.sleep(0.02)
+        import time
+
+        time.sleep(2)
     env.close()
 
 

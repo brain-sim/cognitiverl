@@ -25,6 +25,7 @@ class NavEnv(DirectRLEnv):
         cfg: NavEnvCfg,
         render_mode: str | None = None,
         debug: bool = False,
+        max_total_steps: int | None = None,
         **kwargs,
     ):
         # Add room size as a class attribut
@@ -63,6 +64,12 @@ class NavEnv(DirectRLEnv):
 
         self._debug = debug
         self._setup_config()
+
+        if max_total_steps is None:
+            raise ValueError(
+                "max_total_steps must be provided (from total_timesteps in PPO script)"
+            )
+        self.max_total_steps = max_total_steps
 
     def _setup_config(self):
         raise NotImplementedError("Subclass must implement this method")
@@ -316,7 +323,7 @@ class NavEnv(DirectRLEnv):
             # set actions into simulator
             self.scene.write_data_to_sim()
             # simulate
-            self.sim.step(render=True)
+            self.sim.step(render=False)
             # render between steps only if the GUI or an RTX sensor needs it
             # note: we assume the render interval to be the shortest accepted rendering interval.
             #    If a camera needs rendering at a faster frequency, this will lead to unexpected behavior.
@@ -327,7 +334,7 @@ class NavEnv(DirectRLEnv):
                 self.sim.render()
             # update buffers at sim dt
             self.scene.update(dt=self.physics_dt)
-            self.camera.update(dt=self.physics_dt)
+        self.camera.update(dt=self.step_dt)
         # post-step:
         # -- update env counters (used for curriculum generation)
         self.episode_length_buf += 1  # step in current episode (per env)
@@ -453,34 +460,23 @@ class NavEnv(DirectRLEnv):
 
     def _check_vehicle_flipped(self) -> torch.Tensor:
         # Get robot's orientation
-        robot_quat = (
-            self.robot.data.root_quat_w
-        )  # Shape: (num_envs, 4) in (w,x,y,z) format
-
-        # Get the robot's up vector (local z-axis) in world frame
-        # Using quaternion rotation to transform local up vector (0,0,1) to world frame
+        robot_quat = self.robot.data.root_quat_w  # (num_envs, 4) in (w,x,y,z)
         local_up = torch.tensor([0.0, 0.0, 1.0], device=self.device)
         world_up_vector = math.quat_rotate(
             robot_quat, local_up.repeat(self.num_envs, 1)
         )
-
-        # Calculate the angle between robot's up vector and world up vector
         world_up = torch.tensor([0.0, 0.0, 1.0], device=self.device)
-        up_dot_product = torch.sum(
-            world_up_vector * world_up, dim=-1
-        )  # Shape: (num_envs,)
-        up_angle = torch.acos(
-            torch.clamp(up_dot_product, -1.0, 1.0)
-        )  # Angle in radians
+        up_dot_product = torch.sum(world_up_vector * world_up, dim=-1)  # (num_envs,)
+        up_angle = torch.abs(
+            torch.acos(torch.clamp(up_dot_product, -1.0, 1.0))
+        )  # radians
 
-        # Normalize to get a value between 0 (upright) and 1 (completely flipped)
-        uprightness = 1.0 - (
-            up_angle / torch.pi
-        )  # 1.0 is fully upright, 0.0 is fully flipped
-        return uprightness < 0.5
+        # Consider flipped if angle > 60 degrees (pi/3 radians)
+        flipped = up_angle > (torch.pi / 3)
+        return flipped
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        task_failed = self.episode_length_buf > self.max_episode_length
+        task_failed = self.episode_length_buf > self.max_episode_length_buf
         self._vehicle_flipped = self._check_vehicle_flipped()
         task_failed |= self._vehicle_flipped
         debug_size = 5
@@ -498,8 +494,24 @@ class NavEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
         self.camera.reset(env_ids)
+        min_episode_length = min(
+            max(
+                50
+                + int(0.8 * self.max_episode_length * self.common_step_counter / self.max_total_steps),
+                int(0.8 * self.max_episode_length),
+            ),
+            self.max_episode_length,
+        )
+        self.max_episode_length_buf[env_ids] = torch.randint(
+            min_episode_length,
+            self.max_episode_length + 1,
+            (len(env_ids),),
+            device=self.device,
+        )
 
         self._episode_waypoints_passed[env_ids] = 0
+        if hasattr(self, "_previous_waypoint_reached_step"):
+            self._previous_waypoint_reached_step[env_ids] = 0
 
         num_reset = len(env_ids)
         default_state = self.robot.data.default_root_state[env_ids]
@@ -544,36 +556,114 @@ class NavEnv(DirectRLEnv):
         self._target_positions[env_ids, :, :] = 0.0
         self._markers_pos[env_ids, :, :] = 0.0
 
-        # Generate random positions within the square room
+        # Generate random positions within the square room (vectorized)
+        margin = self.cfg.position_tolerance + self.cfg.position_margin_epsilon
         for i in range(self._num_goals):
-            # Random positions within the square
-            self._target_positions[env_ids, i, 0] = (
-                torch.rand(num_reset, device=self.device) * self.room_size / 2
-                - self.room_size / 4
-            ).clip(
-                min=-self.wall_position
-                + self.wall_thickness / 2
-                + self.cfg.position_tolerance,
-                max=self.wall_position
-                - self.wall_thickness / 2
-                - self.cfg.position_tolerance,
-            )
-            self._target_positions[env_ids, i, 1] = (
-                torch.rand(num_reset, device=self.device) * self.room_size / 2
-                - self.room_size / 4
-            ).clip(
-                min=-self.wall_position
-                + self.wall_thickness / 2
-                + self.cfg.position_tolerance,
-                max=self.wall_position
-                - self.wall_thickness / 2
-                - self.cfg.position_tolerance,
-            )
+            robot_xy = robot_pose[:, :2]  # shape: (num_reset, 2)
+            env_origins = self.scene.env_origins[env_ids, :2]  # shape: (num_reset, 2)
+            num_reset = len(env_ids)
+            if i == 0:
+                # First goal: must satisfy margin from robot
+                N = 20  # number of candidates per env
+                N1 = N // 2
+                N2 = N - N1
+                # First half: smaller range
+                tx_cand1 = (
+                    torch.rand(num_reset, N1, device=self.device) * self.room_size / 2
+                    - self.room_size / 4
+                )
+                ty_cand1 = (
+                    torch.rand(num_reset, N1, device=self.device) * self.room_size / 2
+                    - self.room_size / 4
+                )
+                # Second half: larger range
+                tx_cand2 = (
+                    torch.rand(num_reset, N2, device=self.device) * self.room_size
+                    - self.room_size / 2
+                )
+                ty_cand2 = (
+                    torch.rand(num_reset, N2, device=self.device) * self.room_size
+                    - self.room_size / 2
+                )
+                # Concatenate
+                tx_cand = torch.cat([tx_cand1, tx_cand2], dim=1)
+                ty_cand = torch.cat([ty_cand1, ty_cand2], dim=1)
+                # Clip to wall margin
+                tx_cand = tx_cand.clip(
+                    min=-self.wall_position
+                    + self.wall_thickness / 2
+                    + self.cfg.position_tolerance,
+                    max=self.wall_position
+                    - self.wall_thickness / 2
+                    - self.cfg.position_tolerance,
+                )
+                ty_cand = ty_cand.clip(
+                    min=-self.wall_position
+                    + self.wall_thickness / 2
+                    + self.cfg.position_tolerance,
+                    max=self.wall_position
+                    - self.wall_thickness / 2
+                    - self.cfg.position_tolerance,
+                )
+                # Offset by environment origin
+                tx_cand = tx_cand + env_origins[:, 0:1]
+                ty_cand = ty_cand + env_origins[:, 1:2]
+                # Compute distances to robot
+                dx = tx_cand - robot_xy[:, 0:1]
+                dy = ty_cand - robot_xy[:, 1:2]
+                dist = (dx**2 + dy**2).sqrt()  # shape: (num_reset, N)
+                valid = dist >= margin
+                # For each env, pick the first valid candidate, else last
+                first_valid_idx = valid.float().argmax(dim=1)
+                has_valid = valid.any(dim=1)
+                # If no valid, use last candidate
+                first_valid_idx = torch.where(
+                    has_valid, first_valid_idx, torch.full_like(first_valid_idx, N - 1)
+                )
+                tx = tx_cand[torch.arange(num_reset), first_valid_idx]
+                ty = ty_cand[torch.arange(num_reset), first_valid_idx]
+                self._target_positions[env_ids, i, 0] = tx
+                self._target_positions[env_ids, i, 1] = ty
+            else:
+                # Other goals: no margin validation, just sample and assign
+                tx = (
+                    torch.rand(num_reset, device=self.device) * self.room_size / 2
+                    - self.room_size / 4
+                )
+                ty = (
+                    torch.rand(num_reset, device=self.device) * self.room_size / 2
+                    - self.room_size / 4
+                )
+                tx = tx.clip(
+                    min=-self.wall_position
+                    + self.wall_thickness / 2
+                    + self.cfg.position_tolerance,
+                    max=self.wall_position
+                    - self.wall_thickness / 2
+                    - self.cfg.position_tolerance,
+                )
+                ty = ty.clip(
+                    min=-self.wall_position
+                    + self.wall_thickness / 2
+                    + self.cfg.position_tolerance,
+                    max=self.wall_position
+                    - self.wall_thickness / 2
+                    - self.cfg.position_tolerance,
+                )
+                self._target_positions[env_ids, i, 0] = tx + env_origins[:, 0]
+                self._target_positions[env_ids, i, 1] = ty + env_origins[:, 1]
 
-        # Offset by environment origins
-        self._target_positions[env_ids, :] += self.scene.env_origins[
-            env_ids, :2
-        ].unsqueeze(1)
+        # Verify only the first goal maintains minimum distance from robot
+        robot_xy = robot_pose[:, :2]  # Get robot XY positions
+        tx = self._target_positions[env_ids, 0, 0]  # First goal X positions
+        ty = self._target_positions[env_ids, 0, 1]  # First goal Y positions
+        dist = ((tx - robot_xy[:, 0]) ** 2 + (ty - robot_xy[:, 1]) ** 2).sqrt()
+        min_dist = dist.min().item()
+        if not torch.all(dist >= margin):
+            raise ValueError(
+                f"Invalid target placement: Some first-goal targets are too close to robot. "
+                f"Minimum distance {min_dist:.2f} is less than required margin {margin:.2f}"
+            )
 
         self._target_index[env_ids] = 0
         self._markers_pos[env_ids, :, :2] = self._target_positions[env_ids]

@@ -18,6 +18,7 @@ This script demonstrates different legged robots.
 
 import argparse
 import sys
+import time
 
 import gymnasium as gym
 import torch
@@ -77,6 +78,7 @@ def make_isaaclab_env(
             render_mode="rgb_array"
             if (capture_video and log_dir is not None)
             else None,
+            debug=False,
         )
         return env
 
@@ -105,12 +107,12 @@ except ImportError:
 
 # Keyboard mapping: (forward, left, yaw)
 KEYBOARD_MAPPING = {
-    "w": (20.0, 0.0, 0.0),  # forward
-    "s": (-5.0, 0.0, 0.0),  # backward
+    "w": (4.0, 0.0, 0.0),  # forward
+    "s": (-1.0, 0.0, 0.0),  # backward
     "a": (0.0, 2.0, 0.0),  # left
     "d": (0.0, -2.0, 0.0),  # right
-    "q": (0.0, 0.0, 2.0),  # yaw left
-    "e": (0.0, 0.0, -2.0),  # yaw right
+    "q": (0.0, 0.0, 3.0),  # yaw left
+    "e": (0.0, 0.0, -3.0),  # yaw right
 }
 
 action = None
@@ -174,10 +176,8 @@ def main():
             action.zero_()
         else:
             step_action = torch.zeros_like(action)
-        print(step_action)
         _, reward, _, _, _ = env.step(step_action)
-        # Optionally, add a small sleep to avoid maxing out CPU
-        # import time; time.sleep(0.02)
+        time.sleep(0.02)  # or match your simulation's dt
     env.close()
 
 

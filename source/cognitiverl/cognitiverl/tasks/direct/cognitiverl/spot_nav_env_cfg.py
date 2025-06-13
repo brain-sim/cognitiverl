@@ -9,24 +9,26 @@ from isaaclab.utils import configclass
 from isaaclab_assets.robots.spot import SPOT_CFG
 
 from .nav_env_cfg import NavEnvCfg
+from .waypoint import WAYPOINT_CFG
 
 
 @configclass
 class SpotNavEnvCfg(NavEnvCfg):
-    decimation = 5  # 2
-    episode_length_s = 10.0
+    decimation = 16  # 2
+    render_interval = 16
+    episode_length_s = 60.0
     action_space = 3
     observation_space = 3076  # Changed from 8 to 9 to include minimum wall distance
 
     sim: SimulationCfg = SimulationCfg(
-        dt=1 / 500, render_interval=decimation
+        dt=1 / 200, render_interval=render_interval
     )  # dt=1/250
     robot_cfg: ArticulationCfg = SPOT_CFG.replace(
         prim_path="/World/envs/env_.*/Robot",
     )
 
-    static_friction = 10.0
-    dynamic_friction = 10.0
+    static_friction = 2.0
+    dynamic_friction = 2.0
 
     dof_name = [
         "fl_hx",
@@ -43,24 +45,24 @@ class SpotNavEnvCfg(NavEnvCfg):
         "hr_kn",
     ]
 
-    room_size = 20.0
-    env_spacing = 20.0
-    num_goals = 1
+    waypoint_cfg = WAYPOINT_CFG
+    position_tolerance = waypoint_cfg.markers["marker1"].radius
 
     # Reward Coefficients
     goal_reached_bonus = 125.0
-    position_progress_weight = 3.0
-    wall_penalty_weight = 0.2
-    linear_speed_weight = 0.05
-    laziness_penalty_weight = 0.3
+    wall_penalty_weight = 0.5  # 0.2
+    linear_speed_weight = 0.2  # 0.05
+    # angular_speed_weight = 0.1  # 0.05
+    laziness_penalty_weight = 0.05  # 0.3
     # flip_penalty_weight = 100.0
 
     # Laziness
-    laziness_decay = 0.99
+    laziness_decay = 0.3
     laziness_threshold = 8.0
     max_laziness = 10.0
 
     # Action Scaling
-    action_scale = 1.0
-    throttle_max = 20.0
-    steering_max = 3.0
+    throttle_scale = 3.0
+    steering_scale = 2.0
+    throttle_max = 9.0
+    steering_max = 6.0

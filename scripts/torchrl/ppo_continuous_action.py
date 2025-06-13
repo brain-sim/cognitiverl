@@ -178,6 +178,7 @@ def make_isaaclab_env(
     disable_fabric,
     log_dir=None,
     video_length=200,
+    max_total_steps=None,
     *args,
     **kwargs,
 ):
@@ -200,6 +201,7 @@ def make_isaaclab_env(
             render_mode="rgb_array"
             if (capture_video and log_dir is not None)
             else None,
+            max_total_steps=max_total_steps,
         )
         print_dict({"max_episode_steps": env.unwrapped.max_episode_length}, nesting=4)
         env = IsaacLabRecordEpisodeStatistics(env)
@@ -255,6 +257,7 @@ def main(args):
         args.num_envs,
         args.capture_video,
         args.disable_fabric,
+        max_total_steps=args.total_timesteps,
     )()
     # TRY NOT TO MODIFY: seeding
     seed_everything(

@@ -65,7 +65,7 @@ class SpotPolicyController:
             -1
         )  # [num_envs, 3]
         gravity_vec = torch.tensor(
-            [0.0, 0.0, -1.0], device=lin_vel_I.device, dtype=lin_vel_I.dtype
+            [0.0, 0.0, -1], device=lin_vel_I.device, dtype=lin_vel_I.dtype
         ).reshape(1, 3, 1)
         gravity_b = torch.bmm(
             R_BI, gravity_vec.expand(lin_vel_I.shape[0], 3, 1)
