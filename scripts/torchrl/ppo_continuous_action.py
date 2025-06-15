@@ -293,7 +293,13 @@ def main(args):
     next_done = torch.zeros(args.num_envs).to(device)
     max_ep_ret = -float("inf")
     max_ep_reward = -float("inf")
-    success_rates, avg_reward_per_step, avg_returns = [], [], []
+    success_rates, avg_reward_per_step, avg_returns, max_ep_length, goals_reached = (
+        [],
+        [],
+        [],
+        [],
+        [],
+    )
     pbar = tqdm.tqdm(range(1, args.num_iterations + 1))
     global_step_burnin = None
     start_time = None
@@ -341,6 +347,10 @@ def main(args):
                     avg_reward_per_step.append(r)
             if "success_rate" in infos:
                 success_rates.append(infos["success_rate"])
+            if "max_episode_length" in infos:
+                max_ep_length.append(infos["max_episode_length"])
+            if "goals_reached" in infos:
+                goals_reached.append(infos["goals_reached"])
             if args.log_video:
                 frame = next_obs[indices, : 3 * 32 * 32].reshape(-1, 3, 32, 32)
                 frame = (
@@ -470,7 +480,23 @@ def main(args):
                     desc += f"rew_per_step : avg={torch.tensor(avg_reward_per_step).mean():.2f}, max={max_ep_reward:.2f}"
                 if len(success_rates) > 0:
                     logs["success_rate"] = torch.tensor(success_rates).mean()
-                success_rates, avg_reward_per_step, avg_returns = [], [], []
+                if len(max_ep_length) > 0:
+                    logs["max_episode_length"] = torch.tensor(max_ep_length).mean()
+                if len(goals_reached) > 0:
+                    logs["goals_reached"] = torch.tensor(goals_reached).mean()
+                (
+                    success_rates,
+                    avg_reward_per_step,
+                    avg_returns,
+                    max_ep_length,
+                    goals_reached,
+                ) = (
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                )
             pbar.set_description(f"spd(sps): {speed:3.1f}, " + desc)
             wandb.log(
                 {

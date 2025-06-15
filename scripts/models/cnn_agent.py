@@ -41,6 +41,7 @@ class CNNPPOAgent(nn.Module):
 
         # MLP for extracted features
         self.feature_net = nn.Sequential(
+            nn.LayerNorm(feature_size),
             layer_init(nn.Linear(feature_size, 128)),
             nn.ELU(),
             layer_init(nn.Linear(128, 64)),

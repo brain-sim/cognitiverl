@@ -273,6 +273,15 @@ class NavEnv(DirectRLEnv):
             self.extras["episode_reward"] = torch.mean(
                 self._episode_reward_buf[env_ids].float()
             ).item()
+            self.extras["goals_reached"] = torch.mean(
+                self._goal_reached[env_ids].float()
+            ).item()
+            self.extras["waypoints_passed"] = torch.mean(
+                self._episode_waypoints_passed[env_ids].float()
+            ).item()
+            self.extras["max_episode_length"] = torch.mean(
+                self.max_episode_length_buf[env_ids].float()
+            )
 
     def step(self, action: torch.Tensor) -> VecEnvStepReturn:
         """Execute one time-step of the environment's dynamics.
@@ -494,15 +503,17 @@ class NavEnv(DirectRLEnv):
         else:
             min_episode_length = max(
                 min(
-                    150
+                    100
                     + int(
-                        self.max_episode_length
+                        0.8
+                        * self.max_episode_length
                         * self.common_step_counter
+                        * self.num_envs
                         / self.max_total_steps
                     ),
                     int(0.8 * self.max_episode_length),
                 ),
-                150,
+                100,
             )
             self.max_episode_length_buf[env_ids] = torch.randint(
                 min_episode_length,
