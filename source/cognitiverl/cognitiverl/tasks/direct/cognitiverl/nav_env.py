@@ -503,7 +503,7 @@ class NavEnv(DirectRLEnv):
         else:
             min_episode_length = max(
                 min(
-                    100
+                    200
                     + int(
                         0.8
                         * self.max_episode_length
@@ -513,7 +513,7 @@ class NavEnv(DirectRLEnv):
                     ),
                     int(0.8 * self.max_episode_length),
                 ),
-                100,
+                200,
             )
             self.max_episode_length_buf[env_ids] = torch.randint(
                 min_episode_length,

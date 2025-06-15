@@ -293,8 +293,8 @@ class SpotNavEnv(NavEnv):
         )
         composite_reward = (
             goal_reached_reward
-            + linear_speed_reward
-            + laziness_penalty
+            # + linear_speed_reward
+            # + laziness_penalty
             + wall_penalty
             + fast_goal_reached_reward
         )
