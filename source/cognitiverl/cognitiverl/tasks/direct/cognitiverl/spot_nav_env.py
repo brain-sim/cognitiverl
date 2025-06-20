@@ -187,6 +187,15 @@ class SpotNavEnv(NavEnv):
             dim=-1,
         )
 
+    def _check_stuck_termination(self) -> torch.Tensor:
+        """Early termination if robot is stuck/wandering without progress"""
+        # If no goal reached in last 300 steps and barely moving, terminate
+        steps_since_goal = (
+            self.episode_length_buf - self._previous_waypoint_reached_step
+        )
+        stuck_too_long = steps_since_goal > 100
+        return stuck_too_long
+
     def _get_rewards(self) -> torch.Tensor:
         goal_reached = self._position_error < self.position_tolerance
         goal_reached_reward = self.goal_reached_bonus * torch.nan_to_num(
@@ -291,6 +300,7 @@ class SpotNavEnv(NavEnv):
             posinf=0.0,
             neginf=0.0,
         )
+
         composite_reward = (
             goal_reached_reward
             # + linear_speed_reward

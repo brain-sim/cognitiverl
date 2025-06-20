@@ -49,7 +49,7 @@ class SpotNavEnvCfg(NavEnvCfg):
     position_tolerance = waypoint_cfg.markers["marker1"].radius
 
     # Reward Coefficients
-    goal_reached_bonus = 125.0
+    goal_reached_bonus = 75.0
     wall_penalty_weight = 0.5  # 0.2
     linear_speed_weight = 0.2  # 0.05
     # angular_speed_weight = 0.1  # 0.05

@@ -274,9 +274,6 @@ class NavEnv(DirectRLEnv):
                 self._episode_reward_buf[env_ids].float()
             ).item()
             self.extras["goals_reached"] = torch.mean(
-                self._goal_reached[env_ids].float()
-            ).item()
-            self.extras["waypoints_passed"] = torch.mean(
                 self._episode_waypoints_passed[env_ids].float()
             ).item()
             self.extras["max_episode_length"] = torch.mean(
@@ -483,6 +480,13 @@ class NavEnv(DirectRLEnv):
         task_failed = self.episode_length_buf > self.max_episode_length_buf
         self._vehicle_flipped = self._check_vehicle_flipped()
         task_failed |= self._vehicle_flipped
+
+        # Add stuck termination
+        if hasattr(self, "_previous_waypoint_reached_step") and hasattr(
+            self, "_check_stuck_termination"
+        ):
+            stuck_termination = self._check_stuck_termination()
+            task_failed |= stuck_termination
         debug_size = 5
         if self._debug:
             if torch.any(self._vehicle_flipped[:debug_size]):
@@ -491,6 +495,8 @@ class NavEnv(DirectRLEnv):
                 print(f"Task failed : {task_failed[:debug_size]}")
             if torch.any(self.task_completed[:debug_size]):
                 print(f"Task completed : {self.task_completed[:debug_size]}")
+            if torch.any(stuck_termination[:debug_size]):
+                print(f"Stuck termination: {stuck_termination[:debug_size]}")
         return task_failed, self.task_completed
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
@@ -501,20 +507,14 @@ class NavEnv(DirectRLEnv):
         if self.max_total_steps is None:
             self.max_episode_length_buf[env_ids] = self.max_episode_length
         else:
-            min_episode_length = max(
-                min(
-                    200
-                    + int(
-                        0.8
-                        * self.max_episode_length
-                        * self.common_step_counter
-                        * self.num_envs
-                        / self.max_total_steps
-                    ),
-                    int(0.8 * self.max_episode_length),
-                ),
-                200,
-            )
+            min_episode_length = 150
+            # min_episode_length = min(
+            #     max(
+            #         min_episode_length,
+            #         self.common_step_counter * self.num_envs / self.max_total_steps,
+            #     ),
+            #     int(0.8 * self.max_episode_length),
+            # )
             self.max_episode_length_buf[env_ids] = torch.randint(
                 min_episode_length,
                 self.max_episode_length + 1,
