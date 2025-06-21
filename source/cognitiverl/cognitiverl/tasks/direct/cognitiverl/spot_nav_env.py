@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import torch
 from isaaclab.sensors.camera import TiledCamera, TiledCameraCfg
 from isaaclab.sim.spawners.sensors.sensors_cfg import PinholeCameraCfg
@@ -55,7 +57,9 @@ class SpotNavEnv(NavEnv):
     def _setup_config(self):
         # --- Low-level Spot policy integration ---
         # TODO: Set the correct path to your TorchScript policy file
-        policy_file_path = "/home/user/cognitiverl/source/cognitiverl/cognitiverl/tasks/direct/custom_assets/spot_policy.pt"  # <-- Set this to your actual policy file
+        policy_file_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "custom_assets/spot_policy.pt"
+        )  # make it relative to the project root
         self.policy = SpotPolicyController(policy_file_path)
         # Buffers for previous action and default joint positions
         self._low_level_previous_action = torch.zeros(

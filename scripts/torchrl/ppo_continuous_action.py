@@ -17,7 +17,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from isaaclab.utils import configclass
 from isaaclab.utils.dict import print_dict
 from models import CNNPPOAgent, MLPPPOAgent
-from utils import load_args, seed_everything
+from utils import load_args, seed_everything, update_learning_rate_adaptive
 
 
 @configclass
@@ -52,7 +52,7 @@ class EnvArgs:
 class ExperimentArgs:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    torch_deterministic: bool = True
+    torch_deterministic: bool = False
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     device: str = "cuda:0"
     """device to use for training"""
@@ -62,11 +62,11 @@ class ExperimentArgs:
     """the id of the environment"""
     total_timesteps: int = 10_000_000
     """total timesteps of the experiments"""
-    learning_rate: float = 3e-4
+    learning_rate: float = 1e-3
     """the learning rate of the optimizer"""
-    num_steps: int = 64
+    num_steps: int = 24
     """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = True
+    anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.99
     """the discount factor gamma"""
@@ -122,6 +122,14 @@ class ExperimentArgs:
     """whether to log the training process."""
     log_video: bool = False
     """whether to log the video."""
+
+    # Adaptive learning rate parameters
+    adaptive_lr: bool = True
+    """Use adaptive learning rate based on KL divergence"""
+    desired_kl: float = 0.01
+    """Target KL divergence for adaptive learning rate"""
+    lr_multiplier: float = 1.5
+    """Factor to multiply/divide learning rate by"""
 
 
 @configclass
@@ -205,7 +213,7 @@ def make_isaaclab_env(
         )
         print_dict({"max_episode_steps": env.unwrapped.max_episode_length}, nesting=4)
         env = IsaacLabRecordEpisodeStatistics(env)
-        env = IsaacLabVecEnvWrapper(env, clip_actions=1.0)
+        env = IsaacLabVecEnvWrapper(env)
 
         if capture_video and log_dir is not None:
             video_kwargs = {
@@ -294,7 +302,13 @@ def main(args):
     max_ep_ret = -float("inf")
     max_ep_reward = -float("inf")
     success_rates, avg_reward_per_step, avg_returns = [], [], []
-    pbar = tqdm.tqdm(range(1, args.num_iterations + 1))
+
+    # Create two static progress bars
+    iteration_pbar = tqdm.tqdm(
+        total=args.num_iterations, desc="Iterations", position=0, leave=True
+    )
+    step_pbar = tqdm.tqdm(total=args.num_steps, desc="Steps", position=1, leave=True)
+
     global_step_burnin = None
     start_time = None
     desc = ""
@@ -304,7 +318,7 @@ def main(args):
         # Randomly choose minimum of 9 environments or all environments
         indices = torch.randperm(args.num_envs)[: min(9, args.num_envs)].to(device)
 
-    for iteration in pbar:
+    for iteration in range(1, args.num_iterations + 1):
         if iteration == args.measure_burnin:
             global_step_burnin = global_step
             start_time = time.time()
@@ -314,6 +328,9 @@ def main(args):
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
+
+        # Reset step progress bar for each iteration
+        step_pbar.reset()
 
         for step in range(0, args.num_steps):
             global_step += args.num_envs
@@ -348,6 +365,9 @@ def main(args):
                 )
                 video_frames.append(frame)
             rewards[step] = reward.view(-1)
+
+            # Update step progress bar
+            step_pbar.update(1)
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -441,6 +461,15 @@ def main(args):
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
 
+        # ADD THIS: Apply adaptive learning rate after the update epochs
+        if args.adaptive_lr:
+            new_lr = update_learning_rate_adaptive(
+                optimizer, approx_kl.item(), args.desired_kl, args.lr_multiplier
+            )
+            # Log the learning rate change
+            if global_step_burnin is not None and iteration % args.log_interval == 0:
+                wandb.log({"learning_rate": new_lr}, step=global_step)
+
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
@@ -471,7 +500,8 @@ def main(args):
                 if len(success_rates) > 0:
                     logs["success_rate"] = torch.tensor(success_rates).mean()
                 success_rates, avg_reward_per_step, avg_returns = [], [], []
-            pbar.set_description(f"spd(sps): {speed:3.1f}, " + desc)
+            iteration_desc = f"spd(sps): {speed:3.1f}, " + desc
+            iteration_pbar.set_description(iteration_desc)
             wandb.log(
                 {
                     "speed": speed,
@@ -508,6 +538,13 @@ def main(args):
                 best_return = mean_return
                 best_step = global_step
                 best_ckpt = ckpt_path
+
+        # Update iteration progress bar
+        iteration_pbar.update(1)
+
+    # Close progress bars
+    step_pbar.close()
+    iteration_pbar.close()
 
     envs.close()
     del envs
