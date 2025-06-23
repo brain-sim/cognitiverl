@@ -17,7 +17,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from isaaclab.utils import configclass
 from isaaclab.utils.dict import print_dict
 from models import CNNPPOAgent, MLPPPOAgent
-from utils import load_args, seed_everything
+from utils import load_args, seed_everything, update_learning_rate_adaptive
 
 
 @configclass
@@ -199,7 +199,7 @@ def make_isaaclab_env(
     )
     from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
-    import quadruped.tasks  # noqa: F401
+    import cognitiverl.tasks  # noqa: F401
 
     def thunk():
         cfg = parse_env_cfg(
@@ -278,8 +278,9 @@ def main(args):
         use_torch=True,
         torch_deterministic=True,
     )
-    n_obs = int(np.prod(envs.observation_space["policy"].shape[1:]))
+    n_obs = int(np.prod(envs.observation_space.shape[1:]))
     n_act = int(np.prod(envs.action_space.shape[1:]))
+    print(f"n_obs: {n_obs}\n n_act: {n_act}")
     assert isinstance(envs.action_space, gym.spaces.Box), (
         "only continuous action space is supported"
     )
@@ -291,7 +292,7 @@ def main(args):
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
-    obs = torch.zeros((args.num_steps,) + envs.observation_space["policy"].shape).to(
+    obs = torch.zeros((args.num_steps,) + envs.observation_space.shape).to(
         device
     )
     actions = torch.zeros((args.num_steps,) + envs.action_space.shape).to(device)
@@ -461,7 +462,7 @@ def main(args):
             returns = advantages + values
 
         # flatten the batch
-        b_obs = obs.reshape((-1,) + envs.observation_space["policy"].shape[1:])
+        b_obs = obs.reshape((-1,) + envs.observation_space.shape[1:])
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.action_space.shape[1:])
         b_advantages = advantages.reshape(-1)

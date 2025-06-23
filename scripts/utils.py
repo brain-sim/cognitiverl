@@ -118,3 +118,21 @@ def load_args(ArgsClass, yaml_path=None, cli_args=None):
     merged.update(cli_dict)
     # Return as ArgsClass instance
     return ArgsClass(**merged)
+
+def update_learning_rate_adaptive(optimizer, kl_divergence, desired_kl, lr_multiplier):
+    current_lr = optimizer.param_groups[0]["lr"]
+
+    if kl_divergence > desired_kl * 2.0:
+        new_lr = current_lr / lr_multiplier
+    elif kl_divergence < desired_kl / 2.0:
+        new_lr = current_lr * lr_multiplier
+    else:
+        new_lr = current_lr
+
+    # Clamp learning rate to reasonable bounds
+    new_lr = np.clip(new_lr, 1e-6, 1e-2)
+
+    for param_group in optimizer.param_groups:
+        param_group["lr"] = new_lr
+
+    return new_lr

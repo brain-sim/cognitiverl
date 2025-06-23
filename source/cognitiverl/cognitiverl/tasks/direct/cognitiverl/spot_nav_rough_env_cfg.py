@@ -14,7 +14,7 @@ from .waypoint import WAYPOINT_CFG
 
 @configclass
 class SpotNavRoughEnvCfg(NavEnvCfg):
-    decimation = 16  # 2
+    decimation = 8  # 2
     render_interval = 16
     episode_length_s = 60.0
     action_space = 3

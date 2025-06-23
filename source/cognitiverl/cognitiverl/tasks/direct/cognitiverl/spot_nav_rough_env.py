@@ -58,49 +58,42 @@ class SpotNavRoughEnv(NavEnv):
         self._dof_idx, _ = self.robot.find_joints(self.cfg.dof_name)
 
     def _setup_plane(self):
-        # Import necessary terrain modules
-
-        # Create rough terrain configuration
+        # Create robust rough terrain configuration with safe parameters
         terrain_cfg = TerrainImporterCfg(
             prim_path="/World/ground",
             terrain_type="generator",
             terrain_generator=terrain_gen.TerrainGeneratorCfg(
-                size=(8.0, 8.0),  # Size of each sub-terrain
-                border_width=5.0,  # Border around terrain
-                num_rows=10,  # Number of terrain rows
-                num_cols=10,  # Number of terrain columns
-                horizontal_scale=0.05,  # Horizontal resolution
-                vertical_scale=0.005,  # Vertical resolution
-                slope_threshold=0.75,
-                use_cache=False,
+                size=(1000.0, 1000.0),  # Size of terrain
+                border_width=1.0,  # Safe border width (>0 to avoid division issues)
+                num_rows=1,  # Single terrain patch
+                num_cols=1,  # Single terrain patch
+                horizontal_scale=1.0,  # Safe horizontal resolution (>=1.0)
+                vertical_scale=0.01,  # Safe vertical resolution (>=0.1)
+                slope_threshold=1.0,  # Safe slope threshold (well above 0)
+                use_cache=True,  # Enable caching for performance
                 sub_terrains={
-                    # Random uniform rough terrain only
                     "rough_terrain": terrain_gen.HfRandomUniformTerrainCfg(
-                        proportion=1.0,  # 100% of terrain
-                        noise_range=(0.02, 0.05),  # Height variation (2cm to 15cm)
-                        noise_step=0.02,  # Step size for noise
-                        border_width=0.05,
+                        proportion=1.0,
+                        noise_range=(0.05, 0.15),  # Safe noise range (min >= 0.05)
+                        noise_step=0.05,  # Safe step size (>= 0.05)
+                        border_width=1.0,  # Match outer border width
                     ),
                 },
             ),
-            max_init_terrain_level=3,  # Limit difficulty for training
-            debug_vis=False,  # Set to True to see terrain boundaries
-            visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(0.2, 0.2, 0.2)  # Dark gray color
-            ),
+            max_init_terrain_level=0,  # Single level to avoid complexity
+            debug_vis=False,
+            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.2, 0.2)),
             physics_material=sim_utils.RigidBodyMaterialCfg(
                 friction_combine_mode="multiply",
                 restitution_combine_mode="multiply",
-                static_friction=self.cfg.static_friction,
-                dynamic_friction=self.cfg.dynamic_friction,
+                static_friction=max(self.cfg.static_friction, 0.1),  # Ensure >= 0.1
+                dynamic_friction=max(self.cfg.dynamic_friction, 0.1),  # Ensure >= 0.1
                 restitution=0.0,
             ),
         )
 
         # Create the terrain importer
         terrain_importer = TerrainImporter(terrain_cfg)
-
-        # Store reference for later use
         self._terrain_importer = terrain_importer
 
     def _setup_config(self):
