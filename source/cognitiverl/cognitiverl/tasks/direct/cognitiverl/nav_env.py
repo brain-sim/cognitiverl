@@ -75,7 +75,7 @@ class NavEnv(DirectRLEnv):
     def _setup_camera(self):
         raise NotImplementedError("Subclass must implement this method")
 
-    def _setup_scene(self):
+    def _setup_plane(self):
         # Create a large ground plane without grid
         spawn_ground_plane(
             prim_path="/World/ground",
@@ -94,6 +94,9 @@ class NavEnv(DirectRLEnv):
                 ),
             ),
         )
+
+    def _setup_scene(self):
+        self._setup_plane()
 
         # Setup rest of the scene
         self.robot = Articulation(self.cfg.robot_cfg)

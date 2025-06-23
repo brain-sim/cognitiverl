@@ -52,7 +52,7 @@ class EnvArgs:
 class ExperimentArgs:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    torch_deterministic: bool = True
+    torch_deterministic: bool = False
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     device: str = "cuda:0"
     """device to use for training"""
@@ -62,19 +62,19 @@ class ExperimentArgs:
     """the id of the environment"""
     total_timesteps: int = 10_000_000
     """total timesteps of the experiments"""
-    learning_rate: float = 3e-4
+    learning_rate: float = 1e-3
     """the learning rate of the optimizer"""
-    num_steps: int = 64
+    num_steps: int = 24
     """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = True
+    anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.99
     """the discount factor gamma"""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 8
+    num_minibatches: int = 4
     """the number of mini-batches"""
-    update_epochs: int = 10
+    update_epochs: int = 5
     """the K epochs to update the policy"""
     norm_adv: bool = False
     """Toggles advantages normalization"""
@@ -82,7 +82,7 @@ class ExperimentArgs:
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 0.0
+    ent_coef: float = 0.005
     """coefficient of the entropy"""
     vf_coef: float = 1.0
     """coefficient of the value function"""
@@ -90,6 +90,8 @@ class ExperimentArgs:
     """the maximum norm for the gradient clipping"""
     target_kl: float = 0.01
     """the target KL divergence threshold"""
+    init_at_random_ep_len: bool = False
+    """randomize initial episode lengths (for exploration)"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -122,6 +124,14 @@ class ExperimentArgs:
     """whether to log the training process."""
     log_video: bool = False
     """whether to log the video."""
+
+    # Adaptive learning rate parameters
+    adaptive_lr: bool = True
+    """Use adaptive learning rate based on KL divergence"""
+    desired_kl: float = 0.01
+    """Target KL divergence for adaptive learning rate"""
+    lr_multiplier: float = 1.5
+    """Factor to multiply/divide learning rate by"""
 
 
 @configclass
@@ -189,7 +199,7 @@ def make_isaaclab_env(
     )
     from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
-    import cognitiverl.tasks  # noqa: F401
+    import quadruped.tasks  # noqa: F401
 
     def thunk():
         cfg = parse_env_cfg(
@@ -205,7 +215,9 @@ def make_isaaclab_env(
         )
         print_dict({"max_episode_steps": env.unwrapped.max_episode_length}, nesting=4)
         env = IsaacLabRecordEpisodeStatistics(env)
-        env = IsaacLabVecEnvWrapper(env)
+        env = IsaacLabVecEnvWrapper(
+            env
+        )  # was earlier set to clip_actions=1.0 causing issues.
 
         if capture_video and log_dir is not None:
             video_kwargs = {
@@ -266,7 +278,7 @@ def main(args):
         use_torch=True,
         torch_deterministic=True,
     )
-    n_obs = int(np.prod(envs.observation_space.shape[1:]))
+    n_obs = int(np.prod(envs.observation_space["policy"].shape[1:]))
     n_act = int(np.prod(envs.action_space.shape[1:]))
     assert isinstance(envs.action_space, gym.spaces.Box), (
         "only continuous action space is supported"
@@ -279,7 +291,9 @@ def main(args):
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
-    obs = torch.zeros((args.num_steps,) + envs.observation_space.shape).to(device)
+    obs = torch.zeros((args.num_steps,) + envs.observation_space["policy"].shape).to(
+        device
+    )
     actions = torch.zeros((args.num_steps,) + envs.action_space.shape).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
@@ -291,6 +305,14 @@ def main(args):
 
     next_obs, _ = envs.reset()
     next_done = torch.zeros(args.num_envs).to(device)
+
+    # randomize initial episode lengths (for exploration)
+    if args.init_at_random_ep_len:
+        envs.unwrapped.episode_length_buf = torch.randint_like(
+            envs.unwrapped.episode_length_buf,
+            high=int(envs.unwrapped.max_episode_length),
+        )
+
     max_ep_ret = -float("inf")
     max_ep_reward = -float("inf")
     success_rates, avg_reward_per_step, avg_returns, max_ep_length, goals_reached = (
@@ -300,7 +322,13 @@ def main(args):
         [],
         [],
     )
-    pbar = tqdm.tqdm(range(1, args.num_iterations + 1))
+
+    # Create two static progress bars
+    iteration_pbar = tqdm.tqdm(
+        total=args.num_iterations, desc="Iterations", position=0, leave=True
+    )
+    step_pbar = tqdm.tqdm(total=args.num_steps, desc="Steps", position=1, leave=True)
+
     global_step_burnin = None
     start_time = None
     desc = ""
@@ -310,7 +338,13 @@ def main(args):
         # Randomly choose minimum of 9 environments or all environments
         indices = torch.randperm(args.num_envs)[: min(9, args.num_envs)].to(device)
 
-    for iteration in pbar:
+    # Add these buffers before the training loop starts
+    reward_info_buffer = {}
+    metric_info_buffer = {}
+    curriculum_info_buffer = {}
+    termination_info_buffer = {}
+
+    for iteration in range(1, args.num_iterations + 1):
         if iteration == args.measure_burnin:
             global_step_burnin = global_step
             start_time = time.time()
@@ -320,6 +354,9 @@ def main(args):
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
+
+        # Reset step progress bar for each iteration
+        step_pbar.reset()
 
         for step in range(0, args.num_steps):
             global_step += args.num_envs
@@ -333,11 +370,51 @@ def main(args):
             actions[step] = action
             logprobs[step] = logprob
 
-            # TRY NOT TO MODIFY: execute the game and log data.
-            # next_obs_buf, reward, terminations, truncations, infos = envs.step(action)
-            # next_obs = next_obs_buf["policy"]
-            # next_done = torch.logical_or(terminations, truncations).float()
+            # TRY NOT TO MODIFY BEGIN: execute the game and log data.
             next_obs, reward, next_done, infos = envs.step(action)
+            # Bootstrapping on time outs
+            if "time_outs" in infos:
+                reward += args.gamma * torch.squeeze(
+                    value * infos["time_outs"].unsqueeze(1).to(device), 1
+                )
+            # TRY NOT TO MODIFY END:
+
+            # Capture detailed logging information
+            if "log" in infos:
+                log_data = infos["log"]
+
+                # Capture Episode Rewards
+                for key, value in log_data.items():
+                    if key.startswith("Episode_Reward/"):
+                        reward_name = key.replace("Episode_Reward/", "")
+                        if reward_name not in reward_info_buffer:
+                            reward_info_buffer[reward_name] = []
+                        reward_info_buffer[reward_name].append(value)
+
+                # Capture Metrics
+                for key, value in log_data.items():
+                    if key.startswith("Metrics/"):
+                        metric_name = key.replace("Metrics/", "")
+                        if metric_name not in metric_info_buffer:
+                            metric_info_buffer[metric_name] = []
+                        metric_info_buffer[metric_name].append(value)
+
+                # Capture Curriculum info
+                for key, value in log_data.items():
+                    if key.startswith("Curriculum/"):
+                        curriculum_name = key.replace("Curriculum/", "")
+                        if curriculum_name not in curriculum_info_buffer:
+                            curriculum_info_buffer[curriculum_name] = []
+                        curriculum_info_buffer[curriculum_name].append(value)
+
+                # Capture Termination info
+                for key, value in log_data.items():
+                    if key.startswith("Episode_Termination/"):
+                        termination_name = key.replace("Episode_Termination/", "")
+                        if termination_name not in termination_info_buffer:
+                            termination_info_buffer[termination_name] = []
+                        termination_info_buffer[termination_name].append(value)
+
             if "episode" in infos:
                 for r in infos["episode"]["r"]:
                     max_ep_ret = max(max_ep_ret, r)
@@ -345,6 +422,7 @@ def main(args):
                 for r in infos["episode"]["reward_max"]:
                     max_ep_reward = max(max_ep_reward, r)
                     avg_reward_per_step.append(r)
+
             if "success_rate" in infos:
                 success_rates.append(infos["success_rate"])
             if "max_episode_length" in infos:
@@ -358,6 +436,9 @@ def main(args):
                 )
                 video_frames.append(frame)
             rewards[step] = reward.view(-1)
+
+            # Update step progress bar
+            step_pbar.update(1)
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -380,7 +461,7 @@ def main(args):
             returns = advantages + values
 
         # flatten the batch
-        b_obs = obs.reshape((-1,) + envs.observation_space.shape[1:])
+        b_obs = obs.reshape((-1,) + envs.observation_space["policy"].shape[1:])
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.action_space.shape[1:])
         b_advantages = advantages.reshape(-1)
@@ -434,9 +515,9 @@ def main(args):
                     )
                     v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
                     v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-                    v_loss = 0.5 * v_loss_max.mean()
+                    v_loss = v_loss_max.mean()
                 else:
-                    v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
+                    v_loss = ((newvalue - b_returns[mb_inds]) ** 2).mean()
 
                 entropy_loss = entropy.mean()
                 loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
@@ -450,6 +531,15 @@ def main(args):
 
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
+
+        # ADD THIS: Apply adaptive learning rate after the update epochs
+        if args.adaptive_lr:
+            new_lr = update_learning_rate_adaptive(
+                optimizer, approx_kl.item(), args.desired_kl, args.lr_multiplier
+            )
+            # Log the learning rate change
+            if global_step_burnin is not None and iteration % args.log_interval == 0:
+                wandb.log({"learning_rate": new_lr}, step=global_step)
 
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
@@ -467,7 +557,48 @@ def main(args):
                     "explained_var": explained_var,
                     "old_approx_kl": old_approx_kl,
                     "approx_kl": approx_kl,
+                    "metrics/action_max": b_actions.max().item(),
+                    "metrics/action_min": b_actions.min().item(),
+                    "metrics/obs_max": b_obs.max().item(),
+                    "metrics/obs_min": b_obs.min().item(),
                 }
+
+                # Add reward terms
+                for reward_name, reward_values in reward_info_buffer.items():
+                    if len(reward_values) > 0:
+                        logs[f"rewards/{reward_name}"] = (
+                            torch.tensor(reward_values).float().mean()
+                        )
+                # Add metrics
+                for metric_name, metric_values in metric_info_buffer.items():
+                    if len(metric_values) > 0:
+                        logs[f"metrics/{metric_name}"] = (
+                            torch.tensor(metric_values).float().mean()
+                        )
+                # Add curriculum info
+                for (
+                    curriculum_name,
+                    curriculum_values,
+                ) in curriculum_info_buffer.items():
+                    if len(curriculum_values) > 0:
+                        logs[f"curriculum/{curriculum_name}"] = (
+                            torch.tensor(curriculum_values).float().mean()
+                        )
+                # Add termination info
+                for (
+                    termination_name,
+                    termination_values,
+                ) in termination_info_buffer.items():
+                    if len(termination_values) > 0:
+                        logs[f"terminations/{termination_name}"] = (
+                            torch.tensor(termination_values).float().mean()
+                        )
+                # Clear all buffers for next interval
+                reward_info_buffer.clear()
+                metric_info_buffer.clear()
+                curriculum_info_buffer.clear()
+                termination_info_buffer.clear()
+
                 if len(avg_returns) > 0:
                     logs["avg_episode_return"] = torch.tensor(avg_returns).mean()
                     logs["max_episode_return"] = max_ep_ret
@@ -497,7 +628,8 @@ def main(args):
                     [],
                     [],
                 )
-            pbar.set_description(f"spd(sps): {speed:3.1f}, " + desc)
+            iteration_desc = f"spd(sps): {speed:3.1f}, " + desc
+            iteration_pbar.set_description(iteration_desc)
             wandb.log(
                 {
                     "speed": speed,
@@ -534,6 +666,13 @@ def main(args):
                 best_return = mean_return
                 best_step = global_step
                 best_ckpt = ckpt_path
+
+        # Update iteration progress bar
+        iteration_pbar.update(1)
+
+    # Close progress bars
+    step_pbar.close()
+    iteration_pbar.close()
 
     envs.close()
     del envs

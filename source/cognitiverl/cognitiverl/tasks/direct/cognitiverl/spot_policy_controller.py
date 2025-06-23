@@ -126,6 +126,9 @@ class SpotPolicyController:
         actions = self(obs)
         return actions
 
+class SpotRoughPolicyController(SpotPolicyController):
+    def __init__(self, policy_file_path: str):
+        super().__init__(policy_file_path)
 
 if __name__ == "__main__":
     # Simple test for SpotPolicyController
