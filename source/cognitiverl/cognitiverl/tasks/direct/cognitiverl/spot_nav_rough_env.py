@@ -97,7 +97,7 @@ class SpotNavRoughEnv(NavEnv):
         policy_file_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
             "custom_assets",
-            "spot_rough_policy.pt",
+            self.cfg.policy_file_path,
         )
         self.policy = SpotRoughPolicyController(policy_file_path)
         # Buffers for previous action and default joint positions

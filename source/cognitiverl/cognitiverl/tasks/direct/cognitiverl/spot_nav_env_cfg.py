@@ -19,7 +19,7 @@ class SpotNavEnvCfg(NavEnvCfg):
     episode_length_s = 60.0
     action_space = 3
     observation_space = 3076  # Changed from 8 to 9 to include minimum wall distance
-
+    policy_file_path = "spot_policy_custom_rslrl.pt"
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 200, render_interval=render_interval
     )  # dt=1/250

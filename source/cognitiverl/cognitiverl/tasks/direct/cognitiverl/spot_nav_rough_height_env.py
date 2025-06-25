@@ -10,8 +10,7 @@ from isaaclab.sim.spawners.sensors.sensors_cfg import PinholeCameraCfg
 from .nav_env import NavEnv
 from .spot_nav_rough_env_cfg import SpotNavRoughEnvCfg
 from .spot_policy_controller import (
-    # SpotRoughWithHeightPolicyController,
-    SpotRoughPolicyController,
+    SpotRoughWithHeightPolicyController,
 )
 
 
@@ -101,11 +100,9 @@ class SpotNavRoughHeightEnv(NavEnv):
         policy_file_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
             "custom_assets",
-            "spot_policy_v5.pt",
-            # "spot_rough_with_height_policy.pt",
+            self.cfg.policy_file_path,
         )
-        # self.policy = SpotRoughWithHeightPolicyController(policy_file_path)
-        self.policy = SpotRoughPolicyController(policy_file_path)
+        self.policy = SpotRoughWithHeightPolicyController(policy_file_path)
         # Buffers for previous action and default joint positions
         self._low_level_previous_action = torch.zeros(
             (self.num_envs, 12), device=self.device, dtype=torch.float32
