@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.distributions.normal import Normal
-
+import torch.nn.functional as F
 
 class MLPPPOAgent(nn.Module):
     def __init__(
@@ -49,20 +49,29 @@ class MLPPPOAgent(nn.Module):
     def get_value(self, x):
         return self.critic(x)
 
-    def get_action_and_value(self, obs, action=None, eval_mode=False):
+    def get_action(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute action from raw input."""
+        return self.actor(x)
+
+    def get_action_and_value(self, obs, action : torch.Tensor | None =None):
         action_mean = self.actor(obs)
         action_std = self.actor_std.expand_as(action_mean)
         if self.noise_std_type == "log":
             action_std = torch.clamp(action_std, -20.0, 2.0)
             action_std = torch.exp(action_std)
         elif self.noise_std_type == "scalar":
-            action_std = torch.clamp(action_std, 1e-6)
+            action_std = F.softplus(action_std)
         dist = Normal(action_mean, action_std)
-        if not eval_mode and action is None:
+        if action is None:
             action = dist.sample()
         return (
             action,
             dist.log_prob(action).sum(dim=-1),
             dist.entropy().sum(dim=-1),
             self.critic(obs),
+            action_mean,
+            action_std,
         )
+    
+    def forward(self, obs):
+        return self.get_action(obs)

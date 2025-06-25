@@ -22,11 +22,11 @@ from utils import load_args, seed_everything, update_learning_rate_adaptive
 
 @configclass
 class EnvArgs:
-    task: str = "Leatherback-Nav-v0"
+    task: str = "Spot-Nav-v0"
     """the id of the environment"""
     env_cfg_entry_point: str = "env_cfg_entry_point"
     """the entry point of the environment configuration"""
-    num_envs: int = 512
+    num_envs: int = 4096
     """the number of parallel environments to simulate"""
     seed: int = 1
     """seed of the environment"""
@@ -62,7 +62,7 @@ class ExperimentArgs:
     """the id of the environment"""
     total_timesteps: int = 10_000_000
     """total timesteps of the experiments"""
-    learning_rate: float = 1e-3
+    learning_rate: float = 0.001
     """the learning rate of the optimizer"""
     num_steps: int = 24
     """the number of steps to run in each environment per policy rollout"""
@@ -82,14 +82,12 @@ class ExperimentArgs:
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 0.005
+    ent_coef: float = 0.0025
     """coefficient of the entropy"""
-    vf_coef: float = 1.0
+    vf_coef: float = 0.5
     """coefficient of the value function"""
     max_grad_norm: float = 1.0
     """the maximum norm for the gradient clipping"""
-    target_kl: float = 0.01
-    """the target KL divergence threshold"""
     init_at_random_ep_len: bool = False
     """randomize initial episode lengths (for exploration)"""
 
@@ -104,7 +102,7 @@ class ExperimentArgs:
     measure_burnin: int = 3
 
     # Agent config
-    agent_type: str = "CNNPPOAgent"
+    agent_type: str = "MLPPPOAgent"
 
     checkpoint_interval: int = 10
     """environment steps between saving checkpoints."""
@@ -128,8 +126,8 @@ class ExperimentArgs:
     # Adaptive learning rate parameters
     adaptive_lr: bool = True
     """Use adaptive learning rate based on KL divergence"""
-    desired_kl: float = 0.01
-    """Target KL divergence for adaptive learning rate"""
+    target_kl: float = 0.01
+    """the target KL divergence threshold"""
     lr_multiplier: float = 1.5
     """Factor to multiply/divide learning rate by"""
 
@@ -234,6 +232,7 @@ def make_isaaclab_env(
 
 
 def main(args):
+    print_dict(args, nesting=4)
     run_name = f"{args.task}__{args.exp_name}__{args.seed}"
 
     args.batch_size = int(args.num_envs * args.num_steps)
@@ -280,7 +279,8 @@ def main(args):
     )
     n_obs = int(np.prod(envs.observation_space.shape[1:]))
     n_act = int(np.prod(envs.action_space.shape[1:]))
-    print(f"n_obs: {n_obs}\n n_act: {n_act}")
+    print("n_obs:", n_obs)
+    print("n_act:", n_act)
     assert isinstance(envs.action_space, gym.spaces.Box), (
         "only continuous action space is supported"
     )
@@ -292,20 +292,18 @@ def main(args):
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
-    obs = torch.zeros((args.num_steps,) + envs.observation_space.shape).to(
-        device
-    )
+    obs = torch.zeros((args.num_steps,) + envs.observation_space.shape).to(device)
     actions = torch.zeros((args.num_steps,) + envs.action_space.shape).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-
+    mus = torch.zeros_like(actions)
+    sigmas = torch.zeros_like(actions)
     # TRY NOT TO MODIFY: start the game
     global_step = 0
 
     next_obs, _ = envs.reset()
-    next_done = torch.zeros(args.num_envs).to(device)
 
     # randomize initial episode lengths (for exploration)
     if args.init_at_random_ep_len:
@@ -359,107 +357,119 @@ def main(args):
         # Reset step progress bar for each iteration
         step_pbar.reset()
 
-        for step in range(0, args.num_steps):
-            global_step += args.num_envs
-            obs[step] = next_obs
-            dones[step] = next_done
+        with torch.inference_mode():
+            start_time = time.time()
+            for step in range(0, args.num_steps):
+                global_step += args.num_envs
+                obs[step] = next_obs
 
-            # ALGO LOGIC: action logic
-            with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(next_obs)
+                # ALGO LOGIC: action logic
+                action, logprob, _, value, mu, sigma = agent.get_action_and_value(
+                    next_obs
+                )
                 values[step] = value.flatten()
-            actions[step] = action
-            logprobs[step] = logprob
+                actions[step] = action
+                logprobs[step] = logprob
+                mus[step] = mu
+                sigmas[step] = sigma
 
-            # TRY NOT TO MODIFY BEGIN: execute the game and log data.
-            next_obs, reward, next_done, infos = envs.step(action)
-            # Bootstrapping on time outs
-            if "time_outs" in infos:
-                reward += args.gamma * torch.squeeze(
-                    value * infos["time_outs"].unsqueeze(1).to(device), 1
-                )
-            # TRY NOT TO MODIFY END:
+                # TRY NOT TO MODIFY BEGIN: execute the game and log data.
+                try:
+                    next_obs, reward, next_done, infos = envs.step(action)
+                except Exception:
+                    action = action.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
+                    next_obs, reward, next_done, infos = envs.step(action)
+                # Bootstrapping on time outs
+                if "time_outs" in infos:
+                    reward += args.gamma * torch.squeeze(
+                        value * infos["time_outs"].unsqueeze(1).to(device), 1
+                    )
+                rewards[step] = reward.view(-1)
+                dones[step] = next_done
+                # TRY NOT TO MODIFY END:
 
-            # Capture detailed logging information
-            if "log" in infos:
-                log_data = infos["log"]
+                # Capture detailed logging information
+                if "log" in infos:
+                    log_data = infos["log"]
 
-                # Capture Episode Rewards
-                for key, value in log_data.items():
-                    if key.startswith("Episode_Reward/"):
-                        reward_name = key.replace("Episode_Reward/", "")
-                        if reward_name not in reward_info_buffer:
-                            reward_info_buffer[reward_name] = []
-                        reward_info_buffer[reward_name].append(value)
+                    # Capture Episode Rewards
+                    for key, value in log_data.items():
+                        if key.startswith("Episode_Reward/"):
+                            reward_name = key.replace("Episode_Reward/", "")
+                            if reward_name not in reward_info_buffer:
+                                reward_info_buffer[reward_name] = []
+                            reward_info_buffer[reward_name].append(value)
 
-                # Capture Metrics
-                for key, value in log_data.items():
-                    if key.startswith("Metrics/"):
-                        metric_name = key.replace("Metrics/", "")
-                        if metric_name not in metric_info_buffer:
-                            metric_info_buffer[metric_name] = []
-                        metric_info_buffer[metric_name].append(value)
+                    # Capture Metrics
+                    for key, value in log_data.items():
+                        if key.startswith("Metrics/"):
+                            metric_name = key.replace("Metrics/", "")
+                            if metric_name not in metric_info_buffer:
+                                metric_info_buffer[metric_name] = []
+                            metric_info_buffer[metric_name].append(value)
 
-                # Capture Curriculum info
-                for key, value in log_data.items():
-                    if key.startswith("Curriculum/"):
-                        curriculum_name = key.replace("Curriculum/", "")
-                        if curriculum_name not in curriculum_info_buffer:
-                            curriculum_info_buffer[curriculum_name] = []
-                        curriculum_info_buffer[curriculum_name].append(value)
+                    # Capture Curriculum info
+                    for key, value in log_data.items():
+                        if key.startswith("Curriculum/"):
+                            curriculum_name = key.replace("Curriculum/", "")
+                            if curriculum_name not in curriculum_info_buffer:
+                                curriculum_info_buffer[curriculum_name] = []
+                            curriculum_info_buffer[curriculum_name].append(value)
 
-                # Capture Termination info
-                for key, value in log_data.items():
-                    if key.startswith("Episode_Termination/"):
-                        termination_name = key.replace("Episode_Termination/", "")
-                        if termination_name not in termination_info_buffer:
-                            termination_info_buffer[termination_name] = []
-                        termination_info_buffer[termination_name].append(value)
+                    # Capture Termination info
+                    for key, value in log_data.items():
+                        if key.startswith("Episode_Termination/"):
+                            termination_name = key.replace("Episode_Termination/", "")
+                            if termination_name not in termination_info_buffer:
+                                termination_info_buffer[termination_name] = []
+                            termination_info_buffer[termination_name].append(value)
 
-            if "episode" in infos:
-                for r in infos["episode"]["r"]:
-                    max_ep_ret = max(max_ep_ret, r)
-                    avg_returns.append(r)
-                for r in infos["episode"]["reward_max"]:
-                    max_ep_reward = max(max_ep_reward, r)
-                    avg_reward_per_step.append(r)
+                if "episode" in infos:
+                    for r in infos["episode"]["r"]:
+                        max_ep_ret = max(max_ep_ret, r)
+                        avg_returns.append(r)
+                    for r in infos["episode"]["reward_max"]:
+                        max_ep_reward = max(max_ep_reward, r)
+                        avg_reward_per_step.append(r)
 
-            if "success_rate" in infos:
-                success_rates.append(infos["success_rate"])
-            if "max_episode_length" in infos:
-                max_ep_length.append(infos["max_episode_length"])
-            if "goals_reached" in infos:
-                goals_reached.append(infos["goals_reached"])
-            if args.log_video:
-                frame = next_obs[indices, : 3 * 32 * 32].reshape(-1, 3, 32, 32)
-                frame = (
-                    torchvision.utils.make_grid(frame, nrow=3, scale_each=True) * 255.0
-                )
-                video_frames.append(frame)
-            rewards[step] = reward.view(-1)
+                if "success_rate" in infos:
+                    success_rates.append(infos["success_rate"])
+                if "max_episode_length" in infos:
+                    max_ep_length.append(infos["max_episode_length"])
+                if "goals_reached" in infos:
+                    goals_reached.append(infos["goals_reached"])
+                if args.log_video:
+                    frame = next_obs[indices, : 3 * 32 * 32].reshape(-1, 3, 32, 32)
+                    frame = (
+                        torchvision.utils.make_grid(frame, nrow=3, scale_each=True)
+                        * 255.0
+                    )
+                    video_frames.append(frame)
 
-            # Update step progress bar
-            step_pbar.update(1)
+                # Update step progress bar
+                step_pbar.update(1)
+            step_speed = (args.num_steps * args.num_envs) / (time.time() - start_time)
+            step_pbar.set_description(f"speed (sps) : {step_speed:3.1f}")
 
-        # bootstrap value if not done
-        with torch.no_grad():
+            # bootstrap value if not done
             next_value = agent.get_value(next_obs).reshape(1, -1)
-            advantages = torch.zeros_like(rewards).to(device)
-            lastgaelam = 0
+            returns = torch.zeros_like(rewards).to(device)
+
+            advantage = 0
             for t in reversed(range(args.num_steps)):
                 if t == args.num_steps - 1:
-                    nextnonterminal = 1.0 - next_done
                     nextvalues = next_value
                 else:
-                    nextnonterminal = 1.0 - dones[t + 1]
                     nextvalues = values[t + 1]
+                nextnonterminal = 1.0 - dones[t]
                 delta = (
                     rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
                 )
-                advantages[t] = lastgaelam = (
-                    delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
+                advantage = (
+                    delta + args.gamma * args.gae_lambda * nextnonterminal * advantage
                 )
-            returns = advantages + values
+                returns[t] = advantage + values[t]
+            advantages = returns - values
 
         # flatten the batch
         b_obs = obs.reshape((-1,) + envs.observation_space.shape[1:])
@@ -468,6 +478,8 @@ def main(args):
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
+        b_mus = mus.reshape((-1,) + envs.action_space.shape[1:])
+        b_sigmas = sigmas.reshape((-1,) + envs.action_space.shape[1:])
 
         # Optimizing the policy and value network
         b_inds = np.arange(args.batch_size)
@@ -478,16 +490,25 @@ def main(args):
                 end = start + args.minibatch_size
                 mb_inds = b_inds[start:end]
 
-                _, newlogprob, entropy, newvalue = agent.get_action_and_value(
-                    b_obs[mb_inds], b_actions[mb_inds]
+                _, newlogprob, entropy, newvalue, newmu, newsigma = (
+                    agent.get_action_and_value(b_obs[mb_inds], b_actions[mb_inds])
                 )
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
 
-                with torch.no_grad():
-                    # calculate approx_kl http://joschu.net/blog/kl-approx.html
-                    old_approx_kl = (-logratio).mean()
-                    approx_kl = ((ratio - 1) - logratio).mean()
+                with torch.inference_mode():
+                    kl_mean = torch.mean(
+                        torch.sum(
+                            torch.log(newsigma / b_sigmas[mb_inds] + 1.0e-5)
+                            + (
+                                torch.square(b_sigmas[mb_inds])
+                                + torch.square(b_mus[mb_inds] - newmu)
+                            )
+                            / (2 * torch.square(newsigma))
+                            - 0.5,
+                            dim=-1,
+                        )
+                    )
                     clipfracs += [
                         ((ratio - 1.0).abs() > args.clip_coef).float().mean().item()
                     ]
@@ -530,24 +551,22 @@ def main(args):
                 )
                 optimizer.step()
 
-            if args.target_kl is not None and approx_kl > args.target_kl:
-                break
+            if args.target_kl is not None and args.adaptive_lr:
+                new_lr = update_learning_rate_adaptive(
+                    optimizer, kl_mean.item(), args.target_kl, args.lr_multiplier
+                )
 
-        # ADD THIS: Apply adaptive learning rate after the update epochs
-        if args.adaptive_lr:
-            new_lr = update_learning_rate_adaptive(
-                optimizer, approx_kl.item(), args.desired_kl, args.lr_multiplier
+        # Log the learning rate change
+        if global_step_burnin is not None and iteration % args.log_interval == 0:
+            wandb.log(
+                {"learning_rate": optimizer.param_groups[0]["lr"]}, step=global_step
             )
-            # Log the learning rate change
-            if global_step_burnin is not None and iteration % args.log_interval == 0:
-                wandb.log({"learning_rate": new_lr}, step=global_step)
 
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
         if global_step_burnin is not None and iteration % args.log_interval == 0:
-            speed = (global_step - global_step_burnin) / (time.time() - start_time)
             desc = f"gl_st={global_step:3.0F}, "
             with torch.no_grad():
                 logs = {
@@ -556,8 +575,7 @@ def main(args):
                     "values": values.mean(),
                     "grad_norm": grad_norm,
                     "explained_var": explained_var,
-                    "old_approx_kl": old_approx_kl,
-                    "approx_kl": approx_kl,
+                    "kl_mean": kl_mean,
                     "metrics/action_max": b_actions.max().item(),
                     "metrics/action_min": b_actions.min().item(),
                     "metrics/obs_max": b_obs.max().item(),
@@ -629,11 +647,10 @@ def main(args):
                     [],
                     [],
                 )
-            iteration_desc = f"spd(sps): {speed:3.1f}, " + desc
-            iteration_pbar.set_description(iteration_desc)
+            iteration_pbar.set_description(desc)
             wandb.log(
                 {
-                    "speed": speed,
+                    "speed": step_speed,
                     **logs,
                 },
                 step=global_step,

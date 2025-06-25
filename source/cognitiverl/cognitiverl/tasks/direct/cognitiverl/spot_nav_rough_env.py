@@ -2,12 +2,9 @@ from __future__ import annotations
 
 import os
 
-import isaaclab.sim as sim_utils
 import torch
-from isaaclab import terrains as terrain_gen
 from isaaclab.sensors.camera import TiledCamera, TiledCameraCfg
 from isaaclab.sim.spawners.sensors.sensors_cfg import PinholeCameraCfg
-from isaaclab.terrains import TerrainImporter, TerrainImporterCfg
 
 from .nav_env import NavEnv
 from .spot_nav_rough_env_cfg import SpotNavRoughEnvCfg
@@ -57,53 +54,51 @@ class SpotNavRoughEnv(NavEnv):
     def _setup_robot_dof_idx(self):
         self._dof_idx, _ = self.robot.find_joints(self.cfg.dof_name)
 
-    def _setup_plane(self):
-        # Create robust rough terrain configuration with safe parameters
-        terrain_cfg = TerrainImporterCfg(
-            prim_path="/World/ground",
-            terrain_type="generator",
-            terrain_generator=terrain_gen.TerrainGeneratorCfg(
-                size=(1000.0, 1000.0),  # Size of terrain
-                border_width=1.0,  # Safe border width (>0 to avoid division issues)
-                num_rows=1,  # Single terrain patch
-                num_cols=1,  # Single terrain patch
-                horizontal_scale=1.0,  # Safe horizontal resolution (>=1.0)
-                vertical_scale=0.01,  # Safe vertical resolution (>=0.1)
-                slope_threshold=1.0,  # Safe slope threshold (well above 0)
-                use_cache=True,  # Enable caching for performance
-                sub_terrains={
-                    "rough_terrain": terrain_gen.HfRandomUniformTerrainCfg(
-                        proportion=1.0,
-                        noise_range=(0.05, 0.15),  # Safe noise range (min >= 0.05)
-                        noise_step=0.05,  # Safe step size (>= 0.05)
-                        border_width=1.0,  # Match outer border width
-                    ),
-                },
-            ),
-            max_init_terrain_level=0,  # Single level to avoid complexity
-            debug_vis=False,
-            visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.2, 0.2, 0.2)),
-            physics_material=sim_utils.RigidBodyMaterialCfg(
-                friction_combine_mode="multiply",
-                restitution_combine_mode="multiply",
-                static_friction=max(self.cfg.static_friction, 0.1),  # Ensure >= 0.1
-                dynamic_friction=max(self.cfg.dynamic_friction, 0.1),  # Ensure >= 0.1
-                restitution=0.0,
-            ),
-        )
+    # def _setup_plane(self):
+    #     # Create robust rough terrain configuration with safe parameters
+    #     terrain_cfg = TerrainImporterCfg(
+    #         prim_path="/World/ground",
+    #         terrain_type="generator",
+    #         terrain_generator=terrain_gen.TerrainGeneratorCfg(
+    #             size=(1000.0, 1000.0),  # Size of terrain
+    #             border_width=1.0,  # Safe border width (>0 to avoid division issues)
+    #             num_rows=1,  # Single terrain patch
+    #             num_cols=1,  # Single terrain patch
+    #             horizontal_scale=1.0,  # Safe horizontal resolution (>=1.0)
+    #             vertical_scale=0.01,  # Safe vertical resolution (>=0.1)
+    #             slope_threshold=1.0,  # Safe slope threshold (well above 0)
+    #             use_cache=True,  # Enable caching for performance
+    #             sub_terrains={
+    #                 "rough_terrain": terrain_gen.HfRandomUniformTerrainCfg(
+    #                     proportion=1.0,
+    #                     noise_range=(0.05, 0.15),  # Safe noise range (min >= 0.05)
+    #                     noise_step=0.05,  # Safe step size (>= 0.05)
+    #                     border_width=1.0,  # Match outer border width
+    #                 ),
+    #             },
+    #         ),
+    #         max_init_terrain_level=0,  # Single level to avoid complexity
+    #         debug_vis=False,
+    #         physics_material=sim_utils.RigidBodyMaterialCfg(
+    #             friction_combine_mode="multiply",
+    #             restitution_combine_mode="multiply",
+    #             static_friction=max(self.cfg.static_friction, 0.1),  # Ensure >= 0.1
+    #             dynamic_friction=max(self.cfg.dynamic_friction, 0.1),  # Ensure >= 0.1
+    #             restitution=0.0,
+    #         ),
+    #     )
 
-        # Create the terrain importer
-        terrain_importer = TerrainImporter(terrain_cfg)
-        self._terrain_importer = terrain_importer
+    #     # Create the terrain importer
+    #     terrain_importer = TerrainImporter(terrain_cfg)
+    #     self._terrain_importer = terrain_importer
 
     def _setup_config(self):
         # --- Low-level Spot policy integration ---
-        # TODO: Set the correct path to your TorchScript policy file
         policy_file_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)),
             "custom_assets",
             "spot_rough_policy.pt",
-        )  # <-- Set this to your actual policy file
+        )
         self.policy = SpotRoughPolicyController(policy_file_path)
         # Buffers for previous action and default joint positions
         self._low_level_previous_action = torch.zeros(
@@ -139,9 +134,10 @@ class SpotNavRoughEnv(NavEnv):
         )
         self.steering_scale = self.cfg.steering_scale
         self.throttle_max = self.cfg.throttle_max
+        self.throttle_min = self.cfg.throttle_min
         self.steering_max = self.cfg.steering_max
         self._default_pos = self.robot.data.default_joint_pos.clone()
-        self._smoothing_factor = torch.tensor([0.75, 0.3, 0.3], device=self.device)
+        self._smoothing_factor = torch.tensor([0.7, 0.5, 0.5], device=self.device)
         self.max_episode_length_buf = torch.full(
             (self.num_envs,), self.max_episode_length, device=self.device
         )
@@ -182,7 +178,7 @@ class SpotNavRoughEnv(NavEnv):
         self._actions[:, 0] = self._actions[:, 0] * self.throttle_scale
         self._actions[:, 1:] = self._actions[:, 1:] * self.steering_scale
         self._actions[:, 0] = torch.clamp(
-            self._actions[:, 0], min=0.0, max=self.throttle_max
+            self._actions[:, 0], min=self.throttle_min, max=self.throttle_max
         )
         self._actions[:, 1:] = torch.clamp(
             self._actions[:, 1:], min=-self.steering_max, max=self.steering_max
@@ -194,16 +190,16 @@ class SpotNavRoughEnv(NavEnv):
         # TODO: Replace the following with actual command logic per environment
         default_pos = self._default_pos.clone()  # [num_envs, 12]
         # The following assumes your robot exposes these as torch tensors of shape [num_envs, ...]
-        lin_vel_I = self.robot.data.root_lin_vel_w  # [num_envs, 3]
-        ang_vel_I = self.robot.data.root_ang_vel_w  # [num_envs, 3]
-        q_IB = self.robot.data.root_quat_w  # [num_envs, 4]
+        base_lin_vel = self.robot.data.root_lin_vel_b  # [num_envs, 3]
+        base_ang_vel = self.robot.data.root_ang_vel_b  # [num_envs, 3]
+        projected_gravity = self.robot.data.projected_gravity_b  # [num_envs, 3]
         joint_pos = self.robot.data.joint_pos  # [num_envs, 12]
         joint_vel = self.robot.data.joint_vel  # [num_envs, 12]
         # Compute actions for all environments
         actions = self.policy.get_action(
-            lin_vel_I,
-            ang_vel_I,
-            q_IB,
+            base_lin_vel,
+            base_ang_vel,
+            projected_gravity,
             self._actions,
             self._low_level_previous_action,
             default_pos,
@@ -235,14 +231,14 @@ class SpotNavRoughEnv(NavEnv):
             dim=-1,
         )
 
-    def _check_stuck_termination(self) -> torch.Tensor:
-        """Early termination if robot is stuck/wandering without progress"""
-        # If no goal reached in last 300 steps and barely moving, terminate
-        steps_since_goal = (
-            self.episode_length_buf - self._previous_waypoint_reached_step
-        )
-        stuck_too_long = steps_since_goal > 100
-        return stuck_too_long
+    # def _check_stuck_termination(self, max_steps: int = 200) -> torch.Tensor:
+    #     """Early termination if robot is stuck/wandering without progress"""
+    #     # If no goal reached in last 200 steps and barely moving, terminate
+    #     steps_since_goal = (
+    #         self.episode_length_buf - self._previous_waypoint_reached_step
+    #     )
+    #     stuck_too_long = steps_since_goal > max_steps
+    #     return stuck_too_long
 
     def _get_rewards(self) -> torch.Tensor:
         goal_reached = self._position_error < self.position_tolerance
@@ -260,8 +256,8 @@ class SpotNavRoughEnv(NavEnv):
         self.task_completed = self._target_index > (self._num_goals - 1)
         self._target_index = self._target_index % self._num_goals
         assert (
-            self._previous_waypoint_reached_step[goal_reached.int()]
-            < self.episode_length_buf[goal_reached.int()]
+            self._previous_waypoint_reached_step[goal_reached]
+            < self.episode_length_buf[goal_reached]
         ).all(), "Previous waypoint reached step is greater than episode length"
         # max_reward = 125.0
         # epsilon = 1.0  # reward at max episode length

@@ -264,7 +264,7 @@ class NavEnv(DirectRLEnv):
         """
         if len(env_ids) > 0:
             # log episode length
-            self.extras["episode_length"] = torch.mean(
+            self.extras["Mepisode_length"] = torch.mean(
                 self.episode_length_buf[env_ids].float()
             ).item()
             # calculate and log completion percentage
@@ -338,16 +338,17 @@ class NavEnv(DirectRLEnv):
                 self.sim.render()
             # update buffers at sim dt
             self.scene.update(dt=self.physics_dt)
+
         self.camera.update(dt=self.step_dt)
+        if hasattr(self, "height_scanner"):
+            self.height_scanner.update(dt=self.step_dt)
         # post-step:
         # -- update env counters (used for curriculum generation)
         self.episode_length_buf += 1  # step in current episode (per env)
         self.common_step_counter += 1  # total step (common for all envs)
-
         self.reset_terminated[:], self.reset_time_outs[:] = self._get_dones()
         self.reset_buf = self.reset_terminated | self.reset_time_outs
         self.reward_buf = self._get_rewards()
-
         # -- reset envs that terminated/timed-out and log the episode information
         reset_env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
         if len(reset_env_ids) > 0:
@@ -498,8 +499,6 @@ class NavEnv(DirectRLEnv):
                 print(f"Task failed : {task_failed[:debug_size]}")
             if torch.any(self.task_completed[:debug_size]):
                 print(f"Task completed : {self.task_completed[:debug_size]}")
-            if torch.any(stuck_termination[:debug_size]):
-                print(f"Stuck termination: {stuck_termination[:debug_size]}")
         return task_failed, self.task_completed
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
@@ -507,23 +506,7 @@ class NavEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
         self.camera.reset(env_ids)
-        if self.max_total_steps is None:
-            self.max_episode_length_buf[env_ids] = self.max_episode_length
-        else:
-            min_episode_length = 150
-            # min_episode_length = min(
-            #     max(
-            #         min_episode_length,
-            #         self.common_step_counter * self.num_envs / self.max_total_steps,
-            #     ),
-            #     int(0.8 * self.max_episode_length),
-            # )
-            self.max_episode_length_buf[env_ids] = torch.randint(
-                min_episode_length,
-                self.max_episode_length + 1,
-                (len(env_ids),),
-                device=self.device,
-            )
+        self.max_episode_length_buf[env_ids] = self.max_episode_length
 
         self._episode_waypoints_passed[env_ids] = 0
         if hasattr(self, "_previous_waypoint_reached_step"):

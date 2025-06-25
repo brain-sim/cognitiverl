@@ -113,6 +113,7 @@ KEYBOARD_MAPPING = {
     "d": (0.0, -2.0, 0.0),  # right
     "q": (0.0, 0.0, 3.0),  # yaw left
     "e": (0.0, 0.0, -3.0),  # yaw right
+    "o": (0.0, 0.0, 0.0),  # stop
 }
 
 action = None

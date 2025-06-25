@@ -15,7 +15,7 @@ from .waypoint import WAYPOINT_CFG
 @configclass
 class SpotNavRoughEnvCfg(NavEnvCfg):
     decimation = 8  # 2
-    render_interval = 16
+    render_interval = 8
     episode_length_s = 60.0
     action_space = 3
     observation_space = 3076  # Changed from 8 to 9 to include minimum wall distance
@@ -26,9 +26,6 @@ class SpotNavRoughEnvCfg(NavEnvCfg):
     robot_cfg: ArticulationCfg = SPOT_CFG.replace(
         prim_path="/World/envs/env_.*/Robot",
     )
-
-    static_friction = 2.0
-    dynamic_friction = 2.0
 
     dof_name = [
         "fl_hx",
@@ -47,9 +44,11 @@ class SpotNavRoughEnvCfg(NavEnvCfg):
 
     waypoint_cfg = WAYPOINT_CFG
     position_tolerance = waypoint_cfg.markers["marker1"].radius
-
+    static_friction = 2.0
+    dynamic_friction = 2.0
+    
     # Reward Coefficients
-    goal_reached_bonus = 75.0
+    goal_reached_bonus = 125.0
     wall_penalty_weight = 0.5  # 0.2
     linear_speed_weight = 0.2  # 0.05
     # angular_speed_weight = 0.1  # 0.05
@@ -62,7 +61,7 @@ class SpotNavRoughEnvCfg(NavEnvCfg):
     max_laziness = 10.0
 
     # Action Scaling
-    throttle_scale = 3.0
+    throttle_scale = 1.0
     steering_scale = 2.0
-    throttle_max = 9.0
+    throttle_max = 3.0
     steering_max = 6.0
