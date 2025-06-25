@@ -19,6 +19,9 @@ def seed_everything(
     random.seed(seed)
     os.environ["PYTHONHASHSEED"] = str(seed)
     np.random.seed(seed)
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+
     if isinstance(envs, list):
         for env in envs:
             env.seed(seed=seed)
@@ -119,6 +122,7 @@ def load_args(ArgsClass, yaml_path=None, cli_args=None):
     # Return as ArgsClass instance
     return ArgsClass(**merged)
 
+
 def update_learning_rate_adaptive(optimizer, kl_divergence, desired_kl, lr_multiplier):
     current_lr = optimizer.param_groups[0]["lr"]
 
@@ -130,7 +134,7 @@ def update_learning_rate_adaptive(optimizer, kl_divergence, desired_kl, lr_multi
         new_lr = current_lr
 
     # Clamp learning rate to reasonable bounds
-    new_lr = np.clip(new_lr, 1e-6, 1e-2)
+    new_lr = np.clip(new_lr, 1e-5, 5e-3)
 
     for param_group in optimizer.param_groups:
         param_group["lr"] = new_lr
