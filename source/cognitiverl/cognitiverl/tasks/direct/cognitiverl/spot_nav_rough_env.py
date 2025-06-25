@@ -5,6 +5,7 @@ import os
 import torch
 from isaaclab.sensors.camera import TiledCamera, TiledCameraCfg
 from isaaclab.sim.spawners.sensors.sensors_cfg import PinholeCameraCfg
+from termcolor import colored
 
 from .nav_env import NavEnv
 from .spot_nav_rough_env_cfg import SpotNavRoughEnvCfg
@@ -99,6 +100,7 @@ class SpotNavRoughEnv(NavEnv):
             "custom_assets",
             self.cfg.policy_file_path,
         )
+        print(colored(f"[INFO] Loading policy from {policy_file_path}", "green"))
         self.policy = SpotRoughPolicyController(policy_file_path)
         # Buffers for previous action and default joint positions
         self._low_level_previous_action = torch.zeros(

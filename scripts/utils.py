@@ -134,7 +134,7 @@ def update_learning_rate_adaptive(optimizer, kl_divergence, desired_kl, lr_multi
         new_lr = current_lr
 
     # Clamp learning rate to reasonable bounds
-    new_lr = np.clip(new_lr, 1e-5, 5e-3)
+    new_lr = np.clip(new_lr, 1e-6, 1e-3)
 
     for param_group in optimizer.param_groups:
         param_group["lr"] = new_lr

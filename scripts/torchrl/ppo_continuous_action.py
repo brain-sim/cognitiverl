@@ -61,13 +61,15 @@ class ExperimentArgs:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     device: str = "cuda:0"
     """device to use for training"""
+    wandb_project: str = "ppo_continuous_action"
+    """wandb project to use for training"""
 
     # Algorithm specific arguments
 
     """the id of the environment"""
     total_timesteps: int = 10_000_000
     """total timesteps of the experiments"""
-    learning_rate: float = 0.001
+    learning_rate: float = 0.0003
     """the learning rate of the optimizer"""
     num_steps: int = 24
     """the number of steps to run in each environment per policy rollout"""
@@ -87,9 +89,9 @@ class ExperimentArgs:
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 0.0025
+    ent_coef: float = 0.005
     """coefficient of the entropy"""
-    vf_coef: float = 0.5
+    vf_coef: float = 1.0
     """coefficient of the value function"""
     max_grad_norm: float = 1.0
     """the maximum norm for the gradient clipping"""
@@ -107,7 +109,7 @@ class ExperimentArgs:
     measure_burnin: int = 3
 
     # Agent config
-    agent_type: str = "MLPPPOAgent"
+    agent_type: str = "CNNPPOAgent"
 
     checkpoint_interval: int = 10
     """environment steps between saving checkpoints."""
@@ -246,7 +248,7 @@ def main(args):
 
     # initialize wandb run
     run = wandb.init(
-        project="ppo_continuous_action",
+        project=args.wandb_project if args.wandb_project else "ppo_continuous_action",
         name=f"{os.path.splitext(os.path.basename(__file__))[0]}-{run_name}",
         config=vars(args),
         save_code=True,

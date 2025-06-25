@@ -12,7 +12,7 @@ class MLPPPOAgent(nn.Module):
         critic_hidden_dims=[512, 256, 128],
         activation=nn.ELU,
         noise_std_type="scalar",
-        init_noise_std=10.0,
+        init_noise_std=1.0,
     ):
         super().__init__()
         self.noise_std_type = noise_std_type

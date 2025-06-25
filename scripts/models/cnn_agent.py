@@ -16,7 +16,7 @@ class CNNPPOAgent(nn.Module):
         n_act,
         actor_hidden_dims=[512, 256, 128],
         critic_hidden_dims=[512, 256, 128],
-        noise_std_type="log",
+        noise_std_type="scalar",
         init_noise_std=1.0,
     ):
         super().__init__()
