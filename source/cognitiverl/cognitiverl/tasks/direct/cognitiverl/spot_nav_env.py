@@ -192,7 +192,7 @@ class SpotNavEnv(NavEnv):
             dim=-1,
         )
 
-    def _check_stuck_termination(self, max_steps: int = 400) -> torch.Tensor:
+    def _check_stuck_termination(self, max_steps: int = 300) -> torch.Tensor:
         """Early termination if robot is stuck/wandering without progress"""
         # If no goal reached in last max_steps and barely moving, terminate
         steps_since_goal = (
