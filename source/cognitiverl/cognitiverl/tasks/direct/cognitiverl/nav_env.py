@@ -573,6 +573,7 @@ class NavEnv(DirectRLEnv):
             device=self.device,
         )
 
+        self._episode_reward_buf[env_ids] = 0.0
         self._episode_waypoints_passed[env_ids] = 0
         if hasattr(self, "_previous_waypoint_reached_step"):
             self._previous_waypoint_reached_step[env_ids] = 0

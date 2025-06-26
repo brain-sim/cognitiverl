@@ -113,12 +113,6 @@ class ExperimentArgs:
 
     checkpoint_interval: int = 10
     """environment steps between saving checkpoints."""
-    # play_interval: int = 3
-    # """environment steps between playing evaluation episodes during training."""
-    # run_play: bool = True
-    # """whether to play evaluation episodes during training."""
-    # run_best: bool = True
-    # """whether to run the best model after training."""
     num_eval_envs: int = 3
     """number of environments to run for evaluation/play."""
     num_eval_env_steps: int = 200
@@ -540,7 +534,12 @@ def main(args):
 
             if args.target_kl is not None and args.adaptive_lr:
                 new_lr = update_learning_rate_adaptive(
-                    optimizer, kl_mean.item(), args.target_kl, args.lr_multiplier, min_lr=1e-7, max_lr=1e-3
+                    optimizer,
+                    kl_mean.item(),
+                    args.target_kl,
+                    args.lr_multiplier,
+                    min_lr=1e-7,
+                    max_lr=1e-3,
                 )
 
         # Log the learning rate change

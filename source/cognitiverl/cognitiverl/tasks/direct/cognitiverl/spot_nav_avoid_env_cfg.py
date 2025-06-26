@@ -13,7 +13,7 @@ from .waypoint import WAYPOINT_CFG
 
 
 @configclass
-class SpotNavEnvCfg(NavEnvCfg):
+class SpotNavAvoidEnvCfg(NavEnvCfg):
     decimation = 16  # 2
     render_interval = 16
     episode_length_s = 60.0
@@ -42,8 +42,13 @@ class SpotNavEnvCfg(NavEnvCfg):
         "hr_kn",
     ]
 
+    # Goal waypoints configuration
     waypoint_cfg = WAYPOINT_CFG
     position_tolerance = waypoint_cfg.markers["marker1"].radius
+
+    # Avoidance markers configuration
+    num_avoid_goals = 4
+    avoid_position_tolerance = waypoint_cfg.markers["marker3"].radius
 
     # Reward Coefficients
     goal_reached_bonus = 125.0
@@ -63,9 +68,3 @@ class SpotNavEnvCfg(NavEnvCfg):
     steering_scale = 1.0
     throttle_max = 4.5
     steering_max = 3.0
-
-    # # Action Scaling - for official policy
-    # throttle_scale = 1.0
-    # steering_scale = 0.5
-    # throttle_max = 9.0
-    # steering_max = 4.5
