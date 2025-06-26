@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
-from torch.distributions.normal import Normal
 import torch.nn.functional as F
+from torch.distributions.normal import Normal
+
 
 class MLPPPOAgent(nn.Module):
     def __init__(
@@ -53,7 +54,7 @@ class MLPPPOAgent(nn.Module):
         """Compute action from raw input."""
         return self.actor(x)
 
-    def get_action_and_value(self, obs, action : torch.Tensor | None =None):
+    def get_action_and_value(self, obs, action: torch.Tensor | None = None):
         action_mean = self.actor(obs)
         action_std = self.actor_std.expand_as(action_mean)
         if self.noise_std_type == "log":
@@ -72,6 +73,6 @@ class MLPPPOAgent(nn.Module):
             action_mean,
             action_std,
         )
-    
+
     def forward(self, obs):
         return self.get_action(obs)

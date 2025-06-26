@@ -12,12 +12,12 @@ import torch.optim as optim
 import torchvision
 import tqdm
 import wandb
+from termcolor import colored
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from isaaclab.utils import configclass
-from isaaclab.utils.dict import print_dict
 from models import CNNPPOAgent, MLPPPOAgent
-from utils import load_args, seed_everything, update_learning_rate_adaptive
+from utils import load_args, print_dict, seed_everything, update_learning_rate_adaptive
 
 
 @configclass
@@ -69,9 +69,9 @@ class ExperimentArgs:
     """the id of the environment"""
     total_timesteps: int = 10_000_000
     """total timesteps of the experiments"""
-    learning_rate: float = 0.0003
+    learning_rate: float = 0.0003  # 3e-4
     """the learning rate of the optimizer"""
-    num_steps: int = 24
+    num_steps: int = 64  # 64
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
@@ -79,9 +79,9 @@ class ExperimentArgs:
     """the discount factor gamma"""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 4
+    num_minibatches: int = 8  # 8
     """the number of mini-batches"""
-    update_epochs: int = 5
+    update_epochs: int = 10  # 10
     """the K epochs to update the policy"""
     norm_adv: bool = False
     """Toggles advantages normalization"""
@@ -89,9 +89,9 @@ class ExperimentArgs:
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 0.005
+    ent_coef: float = 0.0  # 0.0
     """coefficient of the entropy"""
-    vf_coef: float = 1.0
+    vf_coef: float = 1.0  # 1.0
     """coefficient of the value function"""
     max_grad_norm: float = 1.0
     """the maximum norm for the gradient clipping"""
@@ -199,7 +199,6 @@ def make_isaaclab_env(
 ):
     import isaaclab_tasks  # noqa: F401
     from isaaclab_rl.torchrl import (
-        IsaacLabRecordEpisodeStatistics,
         IsaacLabVecEnvWrapper,
     )
     from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
@@ -218,8 +217,12 @@ def make_isaaclab_env(
             else None,
             max_total_steps=max_total_steps,
         )
-        print_dict({"max_episode_steps": env.unwrapped.max_episode_length}, nesting=4)
-        env = IsaacLabRecordEpisodeStatistics(env)
+        print_dict(
+            {"max_episode_steps": env.unwrapped.max_episode_length},
+            nesting=4,
+            color="green",
+            attrs=["bold"],
+        )
         env = IsaacLabVecEnvWrapper(
             env
         )  # was earlier set to clip_actions=1.0 causing issues.
@@ -239,7 +242,7 @@ def make_isaaclab_env(
 
 
 def main(args):
-    print_dict(args, nesting=4)
+    print_dict(colored(args, "green", attrs=["bold"]), nesting=4)
     run_name = f"{args.task}__{args.exp_name}__{args.seed}"
 
     args.batch_size = int(args.num_envs * args.num_steps)
@@ -319,16 +322,7 @@ def main(args):
             high=int(envs.unwrapped.max_episode_length),
         )
 
-    max_ep_ret = -float("inf")
-    max_ep_reward = -float("inf")
-    success_rates, avg_reward_per_step, avg_returns, max_ep_length, goals_reached = (
-        [],
-        [],
-        [],
-        [],
-        [],
-    )
-
+    avg_returns = 0.0
     # Create two static progress bars
     iteration_pbar = tqdm.tqdm(
         total=args.num_iterations, desc="Iterations", position=0, leave=True
@@ -386,11 +380,11 @@ def main(args):
                 except Exception:
                     action = action.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
                     next_obs, reward, next_done, infos = envs.step(action)
-                # Bootstrapping on time outs
-                if "time_outs" in infos:
-                    reward += args.gamma * torch.squeeze(
-                        value * infos["time_outs"].unsqueeze(1).to(device), 1
-                    )
+                # # Bootstrapping on time outs - disabled for finite horizon tasks
+                # if "time_outs" in infos:
+                #     reward += args.gamma * torch.squeeze(
+                #         value * infos["time_outs"].unsqueeze(1).to(device), 1
+                #     )
                 rewards[step] = reward.view(-1)
                 dones[step] = next_done
                 # TRY NOT TO MODIFY END:
@@ -431,20 +425,6 @@ def main(args):
                                 termination_info_buffer[termination_name] = []
                             termination_info_buffer[termination_name].append(value)
 
-                if "episode" in infos:
-                    for r in infos["episode"]["r"]:
-                        max_ep_ret = max(max_ep_ret, r)
-                        avg_returns.append(r)
-                    for r in infos["episode"]["reward_max"]:
-                        max_ep_reward = max(max_ep_reward, r)
-                        avg_reward_per_step.append(r)
-
-                if "success_rate" in infos:
-                    success_rates.append(infos["success_rate"])
-                if "max_episode_length" in infos:
-                    max_ep_length.append(infos["max_episode_length"])
-                if "goals_reached" in infos:
-                    goals_reached.append(infos["goals_reached"])
                 if args.log_video:
                     frame = next_obs[indices, : 3 * 32 * 32].reshape(-1, 3, 32, 32)
                     frame = (
@@ -560,7 +540,7 @@ def main(args):
 
             if args.target_kl is not None and args.adaptive_lr:
                 new_lr = update_learning_rate_adaptive(
-                    optimizer, kl_mean.item(), args.target_kl, args.lr_multiplier
+                    optimizer, kl_mean.item(), args.target_kl, args.lr_multiplier, min_lr=1e-7, max_lr=1e-3
                 )
 
         # Log the learning rate change
@@ -579,6 +559,9 @@ def main(args):
                 logs = {
                     "logprobs": b_logprobs.mean(),
                     "advantages": advantages.mean(),
+                    "returns": returns.mean(),
+                    "mu": b_mus.mean(),
+                    "sigma": b_sigmas.mean(),
                     "values": values.mean(),
                     "grad_norm": grad_norm,
                     "explained_var": explained_var,
@@ -620,40 +603,17 @@ def main(args):
                             torch.tensor(termination_values).float().mean()
                         )
                 # Clear all buffers for next interval
+                if metric_info_buffer.get("avg_step_reward", None):
+                    avg_returns = (
+                        torch.tensor(metric_info_buffer["avg_step_reward"])
+                        .mean()
+                        .item()
+                    )
                 reward_info_buffer.clear()
                 metric_info_buffer.clear()
                 curriculum_info_buffer.clear()
                 termination_info_buffer.clear()
 
-                if len(avg_returns) > 0:
-                    logs["avg_episode_return"] = torch.tensor(avg_returns).mean()
-                    logs["max_episode_return"] = max_ep_ret
-                    desc += f"ep_ret : avg={torch.tensor(avg_returns).mean():.2f}, max={max_ep_ret:.2f}, "
-                if len(avg_reward_per_step) > 0:
-                    logs["avg_step_reward"] = torch.tensor(avg_reward_per_step).mean()
-                    logs["max_step_reward"] = (
-                        torch.tensor(avg_reward_per_step).max().item()
-                    )
-                    desc += f"rew_per_step : avg={torch.tensor(avg_reward_per_step).mean():.2f}, max={max_ep_reward:.2f}"
-                if len(success_rates) > 0:
-                    logs["success_rate"] = torch.tensor(success_rates).mean()
-                if len(max_ep_length) > 0:
-                    logs["max_episode_length"] = torch.tensor(max_ep_length).mean()
-                if len(goals_reached) > 0:
-                    logs["goals_reached"] = torch.tensor(goals_reached).mean()
-                (
-                    success_rates,
-                    avg_reward_per_step,
-                    avg_returns,
-                    max_ep_length,
-                    goals_reached,
-                ) = (
-                    [],
-                    [],
-                    [],
-                    [],
-                    [],
-                )
             iteration_pbar.set_description(desc)
             wandb.log(
                 {
@@ -684,14 +644,14 @@ def main(args):
             ckpt_path = os.path.join(ckpt_dir, f"ckpt_{global_step}.pt")
             torch.save(agent.state_dict(), ckpt_path)
 
-            mean_return = float(torch.tensor(avg_returns).mean().nan_to_num())
-            mean_return += 1e-9
+            mean_return = float(avg_returns)
 
             if mean_return > best_return:
                 best_return = mean_return
                 best_step = global_step
                 best_ckpt = ckpt_path
 
+        avg_returns = 0.0
         # Update iteration progress bar
         iteration_pbar.update(1)
 

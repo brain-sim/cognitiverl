@@ -7,6 +7,7 @@ import jax
 import numpy as np
 import torch
 import yaml
+from termcolor import colored
 
 
 def seed_everything(
@@ -123,7 +124,9 @@ def load_args(ArgsClass, yaml_path=None, cli_args=None):
     return ArgsClass(**merged)
 
 
-def update_learning_rate_adaptive(optimizer, kl_divergence, desired_kl, lr_multiplier):
+def update_learning_rate_adaptive(
+    optimizer, kl_divergence, desired_kl, lr_multiplier, min_lr=1e-6, max_lr=1e-2
+):
     current_lr = optimizer.param_groups[0]["lr"]
 
     if kl_divergence > desired_kl * 2.0:
@@ -134,9 +137,33 @@ def update_learning_rate_adaptive(optimizer, kl_divergence, desired_kl, lr_multi
         new_lr = current_lr
 
     # Clamp learning rate to reasonable bounds
-    new_lr = np.clip(new_lr, 1e-6, 1e-3)
+    new_lr = np.clip(new_lr, min_lr, max_lr)
 
     for param_group in optimizer.param_groups:
         param_group["lr"] = new_lr
 
     return new_lr
+
+
+def print_dict(
+    val,
+    nesting: int = -4,
+    start: bool = True,
+    color: str = None,
+    attrs: list[str] = None,
+):
+    """Outputs a nested dictionary."""
+    if isinstance(val, dict):
+        if not start:
+            print("")
+        nesting += 4
+        for k in val:
+            print(nesting * " ", end="")
+            print(colored(k, color, attrs=attrs), end=": ")
+            print_dict(val[k], nesting, start=False)
+    else:
+        # deal with functions in print statements
+        if callable(val):
+            print(colored(callable_to_string(val), color, attrs=attrs))
+        else:
+            print(colored(val, color, attrs=attrs))

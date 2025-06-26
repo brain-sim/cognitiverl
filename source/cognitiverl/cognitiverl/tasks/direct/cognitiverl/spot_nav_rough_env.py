@@ -20,7 +20,6 @@ class SpotNavRoughEnv(NavEnv):
         self,
         cfg: SpotNavRoughEnvCfg,
         render_mode: str | None = None,
-        debug: bool = False,
         **kwargs,
     ):
         super().__init__(cfg, render_mode, **kwargs)
@@ -50,7 +49,6 @@ class SpotNavRoughEnv(NavEnv):
         self._accumulated_laziness = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.float32
         )
-        self._debug = debug
 
     def _setup_robot_dof_idx(self):
         self._dof_idx, _ = self.robot.find_joints(self.cfg.dof_name)
@@ -242,7 +240,7 @@ class SpotNavRoughEnv(NavEnv):
     #     stuck_too_long = steps_since_goal > max_steps
     #     return stuck_too_long
 
-    def _get_rewards(self) -> torch.Tensor:
+    def _get_rewards(self) -> dict[str, torch.Tensor]:
         goal_reached = self._position_error < self.position_tolerance
         goal_reached_reward = self.goal_reached_bonus * torch.nan_to_num(
             torch.where(
@@ -318,12 +316,6 @@ class SpotNavRoughEnv(NavEnv):
             posinf=0.0,
             neginf=0.0,
         )  # log1p(x) = log(1 + x)
-
-        # Debug print
-        if not hasattr(self, "_debug_counter"):
-            self._debug_counter = 0
-        self._debug_counter += 1
-
         # Add wall distance penalty
         min_wall_dist = self._get_distance_to_walls()
         danger_distance = (
@@ -346,23 +338,6 @@ class SpotNavRoughEnv(NavEnv):
             posinf=0.0,
             neginf=0.0,
         )
-
-        composite_reward = (
-            goal_reached_reward
-            # + linear_speed_reward
-            # + laziness_penalty
-            + wall_penalty
-            + fast_goal_reached_reward
-        )
-
-        if self._debug:
-            print("=" * 100)
-            print(f"Goal reached: {goal_reached[0].item()}")
-            print(f"Goal Reward: {goal_reached_reward[0].item()}")
-            print(f"Linear speed reward: {linear_speed[0].item()}")
-            print(f"Laziness penalty: {laziness_penalty[0].item()}")
-            print(f"Wall penalty: {wall_penalty[0].item()}")
-            print("=" * 100)
 
         # Create a tensor of 0s (future), 1s (current), and 2s (completed)
         marker_indices = torch.zeros(
@@ -396,7 +371,10 @@ class SpotNavRoughEnv(NavEnv):
         # Update visualizations
         self.waypoints.visualize(marker_indices=marker_indices)
 
-        if torch.any(composite_reward.isnan()):
-            raise ValueError("Rewards cannot be NAN")
-
-        return composite_reward
+        return {
+            "Episode_Reward/goal_reached_reward": goal_reached_reward,
+            "Episode_Reward/linear_speed_reward": linear_speed_reward,
+            "Episode_Reward/laziness_penalty": laziness_penalty,
+            "Episode_Reward/wall_penalty": wall_penalty,
+            "Episode_Reward/fast_goal_reached_reward": fast_goal_reached_reward,
+        }

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.distributions.normal import Normal
 from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
-import torch.nn.functional as F
+
 
 class CNNPPOAgent(nn.Module):
     """
@@ -88,7 +88,7 @@ class CNNPPOAgent(nn.Module):
         """Compute state-value from raw input."""
         img_feats = self.extract_image(x)
         return self.critic(img_feats)
-    
+
     def get_action(self, x: torch.Tensor) -> torch.Tensor:
         """Compute action from raw input."""
         img_feats = self.extract_image(x)
@@ -105,7 +105,7 @@ class CNNPPOAgent(nn.Module):
             action_std = torch.clamp(action_std, -20.0, 5.0)
             action_std = torch.exp(action_std)
         elif self.noise_std_type == "scalar":
-            action_std = F.softplus(action_std)
+            action_std = torch.clamp(action_std, min=1e-6)
         dist = Normal(action_mean, action_std)
         if action is None:
             action = dist.sample()
@@ -117,6 +117,6 @@ class CNNPPOAgent(nn.Module):
             action_mean,
             action_std,
         )
-    
+
     def forward(self, obs):
         return self.get_action(obs)

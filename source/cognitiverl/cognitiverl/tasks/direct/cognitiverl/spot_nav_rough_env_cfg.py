@@ -46,13 +46,13 @@ class SpotNavRoughEnvCfg(NavEnvCfg):
     position_tolerance = waypoint_cfg.markers["marker1"].radius
     static_friction = 2.0
     dynamic_friction = 2.0
-    
+
     # Reward Coefficients
     goal_reached_bonus = 125.0
-    wall_penalty_weight = 0.5  # 0.2
-    linear_speed_weight = 0.2  # 0.05
+    wall_penalty_weight = 0.0  # 0.2
+    linear_speed_weight = 0.0  # 0.05
+    laziness_penalty_weight = 0.0  # 0.3
     # angular_speed_weight = 0.1  # 0.05
-    laziness_penalty_weight = 0.05  # 0.3
     # flip_penalty_weight = 100.0
 
     # Laziness

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Sequence
 
 import isaaclab.sim as sim_utils
@@ -55,12 +56,25 @@ class NavEnv(DirectRLEnv):
         self._accumulated_laziness = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.float32
         )
+
+        # Add episode metrics
         self._episode_waypoints_passed = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.int32
         )
         self._episode_reward_buf = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.float32
         )
+
+        # Add RSL-style logging buffers
+        self._episode_reward_infos_buf = {}
+        self._metrics_infos_buf = {}
+        self._terminations_infos_buf = defaultdict(
+            lambda: torch.zeros((self.num_envs), device=self.device, dtype=torch.int32)
+        )
+
+        # Add reward tracking for step rewards
+        self._step_rewards_buffer = []
+        self._episode_step_rewards = []
 
         self._debug = debug
         self._setup_config()
@@ -129,8 +143,6 @@ class NavEnv(DirectRLEnv):
         for env_idx, env_origin in enumerate(self.scene.env_origins):
             # This might need to be adjusted based on your environment naming scheme
             env_name = f"env_{env_idx}"
-
-            # print(f"Setting up walls for environment: {env_name}")
 
             # Convert CUDA tensor to CPU before using in NumPy
             origin_cpu = env_origin.cpu().numpy()
@@ -264,24 +276,29 @@ class NavEnv(DirectRLEnv):
         """
         if len(env_ids) > 0:
             # log episode length
-            self.extras["Mepisode_length"] = torch.mean(
+            log_infos = {}
+            log_infos["Metrics/episode_length"] = torch.mean(
                 self.episode_length_buf[env_ids].float()
             ).item()
             # calculate and log completion percentage
             completion_frac = (
                 self._episode_waypoints_passed[env_ids].float() / self._num_goals
             )
-            self.extras["success_rate"] = torch.mean(completion_frac).item()
+            log_infos["Metrics/success_rate"] = torch.mean(completion_frac).item()
             # log episode reward
-            self.extras["episode_reward"] = torch.mean(
+            log_infos["Metrics/episode_reward"] = torch.mean(
                 self._episode_reward_buf[env_ids].float()
             ).item()
-            self.extras["goals_reached"] = torch.mean(
+            log_infos["Metrics/goals_reached"] = torch.mean(
                 self._episode_waypoints_passed[env_ids].float()
             ).item()
-            self.extras["max_episode_length"] = torch.mean(
+            log_infos["Metrics/max_episode_length"] = torch.mean(
                 self.max_episode_length_buf[env_ids].float()
             )
+            log_infos["Metrics/max_episode_return"] = (
+                self._episode_reward_buf[env_ids].float().max().item()
+            )
+            self.extras["log"].update(log_infos)
 
     def step(self, action: torch.Tensor) -> VecEnvStepReturn:
         """Execute one time-step of the environment's dynamics.
@@ -346,11 +363,21 @@ class NavEnv(DirectRLEnv):
         # -- update env counters (used for curriculum generation)
         self.episode_length_buf += 1  # step in current episode (per env)
         self.common_step_counter += 1  # total step (common for all envs)
-        self.reset_terminated[:], self.reset_time_outs[:] = self._get_dones()
+        self.extras["log"] = {}
+
+        self.reset_terminated[:], self.reset_time_outs[:], termination_infos = (
+            self._get_dones()
+        )
         self.reset_buf = self.reset_terminated | self.reset_time_outs
-        self.reward_buf = self._get_rewards()
+        reward_dict = self._get_rewards()  # {reward_name: [num_envs]}
+        self.reward_buf = torch.stack(list(reward_dict.values()), dim=0).sum(
+            dim=0
+        )  # [num_envs]
+        self._episode_reward_buf += self.reward_buf
+
         # -- reset envs that terminated/timed-out and log the episode information
         reset_env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
+
         if len(reset_env_ids) > 0:
             self._log_episode_info(reset_env_ids)
             self._reset_idx(reset_env_ids)
@@ -378,6 +405,17 @@ class NavEnv(DirectRLEnv):
         for k, v in self.obs_buf.items():
             if k != "policy":
                 del self.obs_buf[k]
+
+        # Add RSL-style log data to extras
+        self.extras["log"].update(self._populate_step_log_dict())
+        self.extras["log"].update(termination_infos)
+        self.extras["log"].update(
+            {
+                reward_name: reward_val.mean().item()
+                for reward_name, reward_val in reward_dict.items()
+            }
+        )
+
         # return observations, rewards, resets and extras
         return (
             self.obs_buf,
@@ -460,10 +498,22 @@ class NavEnv(DirectRLEnv):
                 f"Render mode '{self.render_mode}' is not supported. Please use: {self.metadata['render_modes']}."
             )
 
-    def _get_rewards(self) -> torch.Tensor:
+    def _get_rewards(self) -> dict[str, torch.Tensor]:
         raise NotImplementedError("Subclass must implement this method")
 
-    def _check_vehicle_flipped(self) -> torch.Tensor:
+    def _populate_step_log_dict(self) -> dict:
+        """
+        Populate the log dictionary with RSL-style logging format matching the PPO script expectations.
+        Returns a dictionary with keys formatted as Category/metric_name for proper logging.
+        """
+        log_dict = {}
+        log_dict["Metrics/max_step_reward"] = self.reward_buf.max().item()
+        log_dict["Metrics/avg_step_reward"] = self.reward_buf.mean().item()
+        log_dict["Metrics/min_step_reward"] = self.reward_buf.min().item()
+        log_dict["Metrics/std_step_reward"] = self.reward_buf.std().item()
+        return log_dict
+
+    def _check_flipped(self) -> torch.Tensor:
         # Get robot's orientation
         robot_quat = self.robot.data.root_quat_w  # (num_envs, 4) in (w,x,y,z)
         local_up = torch.tensor([0.0, 0.0, 1.0], device=self.device)
@@ -480,33 +530,48 @@ class NavEnv(DirectRLEnv):
         flipped = up_angle > (torch.pi / 3)
         return flipped
 
-    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor]:
-        task_failed = self.episode_length_buf > self.max_episode_length_buf
-        self._vehicle_flipped = self._check_vehicle_flipped()
-        task_failed |= self._vehicle_flipped
+    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor, dict]:
+        time_outs = self.episode_length_buf > self.max_episode_length_buf
+        self._vehicle_flipped = self._check_flipped()
+        terminated = self._vehicle_flipped
+        termination_infos = {
+            "Episode_Termination/flipped": self._vehicle_flipped.float().mean().item(),
+            "Episode_Termination/time_outs": time_outs.float().mean().item(),
+            "Episode_Termination/task_completed": self.task_completed.float()
+            .mean()
+            .item(),
+        }
 
+        terminated |= self.task_completed
         # Add stuck termination
         if hasattr(self, "_previous_waypoint_reached_step") and hasattr(
             self, "_check_stuck_termination"
         ):
             stuck_termination = self._check_stuck_termination()
-            task_failed |= stuck_termination
-        debug_size = 5
-        if self._debug:
-            if torch.any(self._vehicle_flipped[:debug_size]):
-                print(f"Vehicle flipped : {self._vehicle_flipped[:debug_size]}")
-            if torch.any(task_failed[:debug_size]):
-                print(f"Task failed : {task_failed[:debug_size]}")
-            if torch.any(self.task_completed[:debug_size]):
-                print(f"Task completed : {self.task_completed[:debug_size]}")
-        return task_failed, self.task_completed
+            time_outs |= stuck_termination
+            termination_infos["Episode_Termination/stuck_termination"] = (
+                stuck_termination.float().mean().item()
+            )
+        termination_infos["Episode_Termination/terminated"] = (
+            terminated.float().mean().item()
+        )
+        return terminated, time_outs, termination_infos
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
         self.camera.reset(env_ids)
-        self.max_episode_length_buf[env_ids] = self.max_episode_length
+        # self.max_episode_length_buf[env_ids] = self.max_episode_length
+        min_episode_length = min(
+            200 + self.common_step_counter, int(0.7 * self.max_episode_length)
+        )
+        self.max_episode_length_buf[env_ids] = torch.randint(
+            min_episode_length,
+            self.max_episode_length + 1,
+            (len(env_ids),),
+            device=self.device,
+        )
 
         self._episode_waypoints_passed[env_ids] = 0
         if hasattr(self, "_previous_waypoint_reached_step"):
@@ -726,21 +791,5 @@ class NavEnv(DirectRLEnv):
         min_wall_distance = torch.min(wall_distances, dim=1)[
             0
         ]  # Get minimum distance for each environment
-
-        # Add debug printing for the first few environments (every 100 steps)
-        if (
-            self._debug
-            and hasattr(self, "_debug_counter")
-            and self._debug_counter % 100 == 0
-        ):
-            with torch.no_grad():
-                debug_size = 5
-                print("\nDistance Calculation Debug:")
-                for i in range(min(debug_size, self.num_envs)):
-                    print(f"Env {i}:")
-                    print(f"  Robot position: {robot_positions[i]}")
-                    print(f"  Env origin: {env_origins[i]}")
-                    print(f"  Relative position: {relative_positions[i]}")
-                    print(f"  Wall distances [N,S,E,W]: {wall_distances[i]}")
 
         return min_wall_distance
