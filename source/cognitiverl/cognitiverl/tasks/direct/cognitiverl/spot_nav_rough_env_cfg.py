@@ -16,7 +16,7 @@ from .waypoint import WAYPOINT_CFG
 class SpotNavRoughEnvCfg(NavEnvCfg):
     decimation = 16  # 2
     render_interval = 16
-    episode_length_s = 60.0
+    episode_length_s = 70.0
     action_space = 3
     observation_space = 3076  # Changed from 8 to 9 to include minimum wall distance
     policy_file_path = "spot_rough_policy_custom_rslrl_final.pt"
