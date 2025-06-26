@@ -62,6 +62,6 @@ class SpotNavRoughEnvCfg(NavEnvCfg):
 
     # Action Scaling
     throttle_scale = 1.0
-    steering_scale = 2.0
-    throttle_max = 3.0
-    steering_max = 6.0
+    steering_scale = 0.5
+    throttle_max = 9.0
+    steering_max = 4.5
