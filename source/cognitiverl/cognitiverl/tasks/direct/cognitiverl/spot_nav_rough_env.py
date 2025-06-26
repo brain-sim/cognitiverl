@@ -134,7 +134,6 @@ class SpotNavRoughEnv(NavEnv):
         )
         self.steering_scale = self.cfg.steering_scale
         self.throttle_max = self.cfg.throttle_max
-        self.throttle_min = self.cfg.throttle_min
         self.steering_max = self.cfg.steering_max
         self._default_pos = self.robot.data.default_joint_pos.clone()
         self._smoothing_factor = torch.tensor([0.7, 0.5, 0.5], device=self.device)
@@ -178,7 +177,7 @@ class SpotNavRoughEnv(NavEnv):
         self._actions[:, 0] = self._actions[:, 0] * self.throttle_scale
         self._actions[:, 1:] = self._actions[:, 1:] * self.steering_scale
         self._actions[:, 0] = torch.clamp(
-            self._actions[:, 0], min=self.throttle_min, max=self.throttle_max
+            self._actions[:, 0], min=0, max=self.throttle_max
         )
         self._actions[:, 1:] = torch.clamp(
             self._actions[:, 1:], min=-self.steering_max, max=self.steering_max

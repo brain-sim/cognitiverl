@@ -226,7 +226,7 @@ class SpotNavRoughHeightEnv(NavEnv):
             default_pos,
             joint_pos,
             joint_vel,
-            # height_obs,
+            height_obs,
         )
         # Update previous action buffer
         self._low_level_previous_action = actions.detach()
