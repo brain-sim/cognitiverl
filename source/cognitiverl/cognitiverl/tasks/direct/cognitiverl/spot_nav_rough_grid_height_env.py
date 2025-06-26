@@ -18,7 +18,7 @@ from .spot_policy_controller import (
 )
 
 
-class SpotNavRoughHeightEnv(NavEnv):
+class SpotNavRoughGridHeightEnv(NavEnv):
     cfg: SpotNavRoughEnvCfg
     ACTION_SCALE = 0.2  # Scale for policy output (delta from default pose)
 
@@ -69,19 +69,15 @@ class SpotNavRoughHeightEnv(NavEnv):
             terrain_generator=terrain_gen.TerrainGeneratorCfg(
                 seed=1,
                 use_cache=True,
-                size=(1000.0, 1000.0),  # Size of terrain
-                border_width=1.0,  # Safe border width (>0 to avoid division issues)
-                num_rows=2,  # Single terrain patch
-                num_cols=2,  # Single terrain patch
-                horizontal_scale=1.0,  # Safe horizontal resolution (>=1.0)
-                vertical_scale=0.05,  # Safe vertical resolution (>=0.1)
-                slope_threshold=1.0,  # Safe slope threshold (well above 0)
+                size=(200.0, 200.0),  # Size of terrain
+                num_rows=1,  # Single terrain patch
+                num_cols=1,  # Single terrain patch
                 sub_terrains={
-                    "rough_terrain": terrain_gen.HfRandomUniformTerrainCfg(
+                    "grid_terrain": terrain_gen.MeshRandomGridTerrainCfg(
                         proportion=1.0,
-                        noise_range=(0.05, 0.15),  # Safe noise range (min >= 0.05)
-                        noise_step=0.05,  # Safe step size (>= 0.05)
-                        border_width=1.0,  # Match outer border width
+                        grid_width=0.45,
+                        grid_height_range=(0.01, 0.06),
+                        platform_width=3.0,
                     ),
                 },
             ),

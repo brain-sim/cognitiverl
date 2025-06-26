@@ -59,3 +59,12 @@ gym.register(
         "env_cfg_entry_point": f"{__name__}.spot_nav_avoid_env_cfg:SpotNavAvoidEnvCfg",
     },
 )
+
+gym.register(
+    id="Spot-Nav-Grid-v0",
+    entry_point=f"{__name__}.spot_nav_rough_grid_height_env:SpotNavRoughGridHeightEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.spot_nav_rough_env_cfg:SpotNavRoughEnvCfg",
+    },
+)

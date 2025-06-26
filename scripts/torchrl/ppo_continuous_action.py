@@ -79,7 +79,7 @@ class ExperimentArgs:
     """the discount factor gamma"""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 8  # 8
+    num_minibatches: int = 4  # 8
     """the number of mini-batches"""
     update_epochs: int = 10  # 10
     """the K epochs to update the policy"""
@@ -91,7 +91,7 @@ class ExperimentArgs:
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
     ent_coef: float = 0.0  # 0.0
     """coefficient of the entropy"""
-    vf_coef: float = 1.0  # 1.0
+    vf_coef: float = 0.5  # 1.0
     """coefficient of the value function"""
     max_grad_norm: float = 1.0
     """the maximum norm for the gradient clipping"""

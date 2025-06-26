@@ -14,12 +14,12 @@ from .waypoint import WAYPOINT_CFG
 
 @configclass
 class SpotNavRoughEnvCfg(NavEnvCfg):
-    decimation = 8  # 2
-    render_interval = 8
+    decimation = 16  # 2
+    render_interval = 16
     episode_length_s = 60.0
     action_space = 3
     observation_space = 3076  # Changed from 8 to 9 to include minimum wall distance
-    policy_file_path = "spot_rough_policy_custom_rslrl.pt"
+    policy_file_path = "spot_rough_policy_custom_rslrl_final.pt"
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 200, render_interval=render_interval
     )  # dt=1/250
@@ -49,7 +49,7 @@ class SpotNavRoughEnvCfg(NavEnvCfg):
 
     # Reward Coefficients
     goal_reached_bonus = 125.0
-    wall_penalty_weight = 0.0  # 0.2
+    wall_penalty_weight = 0.2  # 0.2
     linear_speed_weight = 0.0  # 0.05
     laziness_penalty_weight = 0.0  # 0.3
     # angular_speed_weight = 0.1  # 0.05
