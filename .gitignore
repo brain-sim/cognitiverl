@@ -14,7 +14,6 @@
 **/*.usdc
 **/*.usdz
 !source/cognitiverl/cognitiverl/tasks/direct/custom_assets/cognitiverl_simple_better.usd
-!source/cognitiverl/cognitiverl/tasks/direct/custom_assets/grid_terrain.usd
 
 # Python
 .DS_Store
