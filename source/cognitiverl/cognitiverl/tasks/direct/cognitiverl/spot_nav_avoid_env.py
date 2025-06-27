@@ -121,6 +121,7 @@ class SpotNavAvoidEnv(NavEnv):
 
         # Add avoid penalty weight
         self.avoid_penalty_weight = self.cfg.avoid_penalty_weight
+        self.fast_goal_reached_bonus = self.cfg.fast_goal_reached_weight
 
     def _setup_camera(self):
         camera_prim_path = "/World/envs/env_.*/Robot/body/Camera"
@@ -289,17 +290,17 @@ class SpotNavAvoidEnv(NavEnv):
             < self.episode_length_buf[goal_reached]
         ).all(), "Previous waypoint reached step is greater than episode length"
         # Compute k using torch.log
-        k = torch.log(torch.tensor(125.0, device=self.device)) / (
+        k = torch.log(torch.tensor(self.fast_goal_reached_bonus, device=self.device)) / (
             self.max_episode_length - 1
         )
         steps_taken = self.episode_length_buf - self._previous_waypoint_reached_step
         fast_goal_reached_reward = torch.where(
             goal_reached,
-            125.0 * torch.exp(-k * (steps_taken - 1)),
+            self.fast_goal_reached_bonus * torch.exp(-k * (steps_taken - 1)),
             torch.zeros_like(self._previous_waypoint_reached_step),
         )
         fast_goal_reached_reward = torch.clamp(
-            fast_goal_reached_reward, min=0.0, max=125.0
+            fast_goal_reached_reward, min=0.0, max=self.fast_goal_reached_bonus
         )
         self._previous_waypoint_reached_step = torch.where(
             goal_reached,
