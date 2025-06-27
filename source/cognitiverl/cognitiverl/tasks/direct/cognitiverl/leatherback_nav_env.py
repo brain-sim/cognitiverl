@@ -108,7 +108,7 @@ class LeatherbackNavEnv(NavEnv):
             dim=-1,
         )
 
-    def _get_rewards(self) -> torch.Tensor:
+    def _get_rewards(self) -> dict[str, torch.Tensor]:
         goal_reached = self._position_error < self.position_tolerance
         goal_reached_reward = self.goal_reached_bonus * torch.nan_to_num(
             torch.where(
@@ -158,22 +158,6 @@ class LeatherbackNavEnv(NavEnv):
             posinf=0.0,
             neginf=0.0,
         )  # log1p(x) = log(1 + x)
-        # Debug print
-        if not hasattr(self, "_debug_counter"):
-            self._debug_counter = 0
-        self._debug_counter += 1
-
-        if self._debug and self._debug_counter % 100 == 0:
-            with torch.no_grad():
-                debug_size = 5
-                print("\nLaziness Debug (Step {}):".format(self._debug_counter))
-                for i in range(min(debug_size, self.num_envs)):
-                    print(f"Env {i}:")
-                    print(f"  Current speed: {linear_speed[i]:.3f}")
-                    print(
-                        f"  Accumulated laziness: {self._accumulated_laziness[i]:.3f}"
-                    )
-                    print(f"  Laziness penalty: {laziness_penalty[i]:.3f}")
         # Add wall distance penalty
         min_wall_dist = self._get_distance_to_walls()
         danger_distance = (
@@ -190,11 +174,6 @@ class LeatherbackNavEnv(NavEnv):
             posinf=0.0,
             neginf=0.0,
         )
-
-        composite_reward = (
-            goal_reached_reward + linear_speed_reward + laziness_penalty + wall_penalty
-        )
-
         # Create a tensor of 0s (future), 1s (current), and 2s (completed)
         marker_indices = torch.zeros(
             (self.num_envs, self._num_goals), device=self.device, dtype=torch.long
@@ -217,7 +196,9 @@ class LeatherbackNavEnv(NavEnv):
         # Update visualizations
         self.waypoints.visualize(marker_indices=marker_indices)
 
-        if torch.any(composite_reward.isnan()):
-            raise ValueError("Rewards cannot be NAN")
-
-        return composite_reward
+        return {
+            "Episode_Reward/goal_reached_reward": goal_reached_reward,
+            "Episode_Reward/linear_speed_reward": linear_speed_reward,
+            "Episode_Reward/laziness_penalty": laziness_penalty,
+            "Episode_Reward/wall_penalty": wall_penalty,
+        }

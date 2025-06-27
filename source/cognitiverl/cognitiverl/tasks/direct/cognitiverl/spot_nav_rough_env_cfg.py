@@ -13,13 +13,13 @@ from .waypoint import WAYPOINT_CFG
 
 
 @configclass
-class SpotNavEnvCfg(NavEnvCfg):
-    decimation = 16  # 2
-    render_interval = 16
+class SpotNavRoughEnvCfg(NavEnvCfg):
+    decimation = 8  # 2
+    render_interval = 8
     episode_length_s = 60.0
     action_space = 3
     observation_space = 3076  # Changed from 8 to 9 to include minimum wall distance
-    policy_file_path = "spot_policy_custom_rslrl.pt"
+    policy_file_path = "spot_rough_policy.pt"
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 200, render_interval=render_interval
     )  # dt=1/250
@@ -44,10 +44,12 @@ class SpotNavEnvCfg(NavEnvCfg):
 
     waypoint_cfg = WAYPOINT_CFG
     position_tolerance = waypoint_cfg.markers["marker1"].radius
+    static_friction = 2.0
+    dynamic_friction = 2.0
 
     # Reward Coefficients
     goal_reached_bonus = 125.0
-    wall_penalty_weight = 0.2  # 0.2
+    wall_penalty_weight = 0.0  # 0.2
     linear_speed_weight = 0.0  # 0.05
     laziness_penalty_weight = 0.0  # 0.3
     # angular_speed_weight = 0.1  # 0.05
@@ -59,7 +61,7 @@ class SpotNavEnvCfg(NavEnvCfg):
     max_laziness = 10.0
 
     # Action Scaling
-    throttle_scale = 1.5
-    steering_scale = 1.0
-    throttle_max = 4.5
-    steering_max = 3.0
+    throttle_scale = 1.0
+    steering_scale = 2.0
+    throttle_max = 3.0
+    steering_max = 6.0

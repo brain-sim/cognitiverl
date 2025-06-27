@@ -126,6 +126,180 @@ class SpotPolicyController:
         actions = self(obs)
         return actions
 
+class SpotRoughPolicyController(SpotPolicyController):
+    def __init__(self, policy_file_path: str):
+        super().__init__(policy_file_path)
+
+    def compute_observation(
+        self,
+        base_lin_vel,
+        base_ang_vel,
+        projected_gravity,
+        command,
+        previous_action,
+        default_pos,
+        joint_pos,
+        joint_vel,
+    ) -> torch.Tensor:
+        """
+        Compute the observation vector for the policy for all environments (vectorized).
+        Args:
+            lin_vel_I: [num_envs, 3] torch.Tensor
+            ang_vel_I: [num_envs, 3] torch.Tensor
+            q_IB: [num_envs, 4] torch.Tensor (quaternion)
+            command: [num_envs, 3] torch.Tensor
+            previous_action: [num_envs, 12] torch.Tensor
+            default_pos: [num_envs, 12] torch.Tensor
+            joint_pos: [num_envs, 12] torch.Tensor
+            joint_vel: [num_envs, 12] torch.Tensor
+        Returns:
+            obs: [num_envs, 48] torch.Tensor
+        """
+        obs = torch.zeros(
+            (base_lin_vel.shape[0], 48), device=base_lin_vel.device, dtype=base_lin_vel.dtype
+        )
+        obs[:, 0:3] = base_lin_vel
+        obs[:, 3:6] = base_ang_vel
+        obs[:, 6:9] = projected_gravity
+        obs[:, 9:12] = command
+        obs[:, 12:24] = joint_pos - default_pos
+        obs[:, 24:36] = joint_vel
+        obs[:, 36:48] = previous_action
+        return obs
+
+    def compute_command(self, goal, state=None) -> torch.Tensor:
+        """
+        Compute the command vector (e.g., navigation command) for the policy.
+        Args:
+            goal: The target or goal (type as needed).
+            state: Optionally, the current state (type as needed).
+        Returns:
+            torch.Tensor: The command vector for the policy.
+        """
+        # TODO: Implement this method for your environment
+        raise NotImplementedError(
+            "Implement compute_command for your Spot environment."
+        )
+
+    def get_action(
+        self,
+        base_lin_vel,
+        base_ang_vel,
+        projected_gravity,
+        command,
+        previous_action,
+        default_pos,
+        joint_pos,
+        joint_vel,
+    ) -> torch.Tensor:
+        """
+        Compute the observation from the robot state and command, then run the policy to get the action (vectorized).
+        All arguments are batched torch tensors.
+        Returns:
+            actions: [num_envs, action_dim] torch.Tensor
+        """
+        obs = self.compute_observation(
+            base_lin_vel,
+            base_ang_vel,
+            projected_gravity,
+            command,
+            previous_action,
+            default_pos,
+            joint_pos,
+            joint_vel,
+        )
+        actions = self(obs)
+        return actions
+
+class SpotRoughWithHeightPolicyController(SpotPolicyController):
+    def __init__(self, policy_file_path: str):
+        super().__init__(policy_file_path)
+
+    def compute_observation(
+        self,
+        base_lin_vel,
+        base_ang_vel,
+        projected_gravity,
+        command,
+        previous_action,
+        default_pos,
+        joint_pos,
+        joint_vel,
+        height_obs,
+    ) -> torch.Tensor:
+        """
+        Compute the observation vector for the policy for all environments (vectorized).
+        Args:
+            lin_vel_I: [num_envs, 3] torch.Tensor
+            ang_vel_I: [num_envs, 3] torch.Tensor
+            q_IB: [num_envs, 4] torch.Tensor (quaternion)
+            command: [num_envs, 3] torch.Tensor
+            previous_action: [num_envs, 12] torch.Tensor
+            default_pos: [num_envs, 12] torch.Tensor
+            joint_pos: [num_envs, 12] torch.Tensor
+            joint_vel: [num_envs, 12] torch.Tensor
+        Returns:
+            obs: [num_envs, 48] torch.Tensor
+        """
+        obs = torch.zeros(
+            (base_lin_vel.shape[0], 57), device=base_lin_vel.device, dtype=base_lin_vel.dtype
+        )
+        obs[:, 0:3] = base_lin_vel
+        obs[:, 3:6] = base_ang_vel
+        obs[:, 6:9] = projected_gravity
+        obs[:, 9:12] = command
+        obs[:, 12:24] = joint_pos - default_pos
+        obs[:, 24:36] = joint_vel
+        obs[:, 36:48] = previous_action
+        obs[:, 48:57] = height_obs
+        return obs
+
+    def compute_command(self, goal, state=None) -> torch.Tensor:
+        """
+        Compute the command vector (e.g., navigation command) for the policy.
+        Args:
+            goal: The target or goal (type as needed).
+            state: Optionally, the current state (type as needed).
+        Returns:
+            torch.Tensor: The command vector for the policy.
+        """
+        # TODO: Implement this method for your environment
+        raise NotImplementedError(
+            "Implement compute_command for your Spot environment."
+        )
+
+    def get_action(
+        self,
+        base_lin_vel,
+        base_ang_vel,
+        projected_gravity,
+        command,
+        previous_action,
+        default_pos,
+        joint_pos,
+        joint_vel,
+        height_obs,
+    ) -> torch.Tensor:
+        """
+        Compute the observation from the robot state and command, then run the policy to get the action (vectorized).
+        All arguments are batched torch tensors.
+        Returns:
+            actions: [num_envs, action_dim] torch.Tensor
+        """
+        obs = self.compute_observation(
+            base_lin_vel,
+            base_ang_vel,
+            projected_gravity,
+            command,
+            previous_action,
+            default_pos,
+            joint_pos,
+            joint_vel,
+            height_obs,
+        )
+        actions = self(obs)
+        return actions
+
 
 if __name__ == "__main__":
     # Simple test for SpotPolicyController

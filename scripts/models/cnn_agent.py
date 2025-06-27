@@ -3,8 +3,6 @@ import torch.nn as nn
 from torch.distributions.normal import Normal
 from torchvision.models import MobileNet_V3_Small_Weights, mobilenet_v3_small
 
-from .utils import layer_init
-
 
 class CNNPPOAgent(nn.Module):
     """
@@ -12,9 +10,17 @@ class CNNPPOAgent(nn.Module):
     extraction, followed by fully connected layers for policy and value estimation.
     """
 
-    def __init__(self, n_obs, n_act):
+    def __init__(
+        self,
+        n_obs,
+        n_act,
+        actor_hidden_dims=[512, 256, 128],
+        critic_hidden_dims=[512, 256, 128],
+        noise_std_type="scalar",
+        init_noise_std=1.0,
+    ):
         super().__init__()
-
+        self.noise_std_type = noise_std_type
         # Image input dimensions
         channels, height, width = 3, 32, 32
         self.img_size = (channels, height, width)
@@ -40,22 +46,35 @@ class CNNPPOAgent(nn.Module):
             feature_size = self.backbone(dummy).view(1, -1).size(1)
 
         # MLP for extracted features
-        self.feature_net = nn.Sequential(
-            layer_init(nn.Linear(feature_size, 128)),
-            nn.ELU(),
-            layer_init(nn.Linear(128, 64)),
-            nn.ELU(),
-        )
 
-        # Critic head
-        self.critic = layer_init(nn.Linear(64, 1), std=1.0)
+        actor_layers = []
+        critic_layers = []
+        for i in range(len(actor_hidden_dims)):
+            if i == 0:
+                actor_layers.append(nn.Linear(feature_size, actor_hidden_dims[i]))
+                critic_layers.append(nn.Linear(feature_size, critic_hidden_dims[i]))
+            else:
+                actor_layers.append(
+                    nn.Linear(actor_hidden_dims[i - 1], actor_hidden_dims[i])
+                )
+                critic_layers.append(
+                    nn.Linear(critic_hidden_dims[i - 1], critic_hidden_dims[i])
+                )
+            actor_layers.append(nn.ELU())
+            critic_layers.append(nn.ELU())
+        actor_layers.append(nn.Linear(actor_hidden_dims[-1], n_act))
+        critic_layers.append(nn.Linear(critic_hidden_dims[-1], 1))
+        self.actor = nn.Sequential(*actor_layers)
+        self.critic = nn.Sequential(*critic_layers)
 
-        # Actor head (mean) and log std parameter
-        self.actor_mean = nn.Sequential(
-            layer_init(nn.Linear(64, n_act, bias=False), std=0.1),
-            nn.Tanh(),
-        )
-        self.actor_logstd = nn.Parameter(torch.zeros(1, n_act))
+        if self.noise_std_type == "scalar":
+            self.actor_std = nn.Parameter(init_noise_std * torch.ones(n_act))
+        elif self.noise_std_type == "log":
+            self.actor_std = nn.Parameter(torch.log(init_noise_std * torch.ones(n_act)))
+        else:
+            raise ValueError(f"Invalid noise_std_type: {self.noise_std_type}")
+        Normal.set_default_validate_args(False)
+
 
     def extract_image(self, x: torch.Tensor) -> torch.Tensor:
         """Extract features from image portion of the state vector."""
@@ -70,26 +89,36 @@ class CNNPPOAgent(nn.Module):
     def get_value(self, x: torch.Tensor) -> torch.Tensor:
         """Compute state-value from raw input."""
         img_feats = self.extract_image(x)
-        h = self.feature_net(img_feats)
-        return self.critic(h)
+        return self.critic(img_feats)
+
+    def get_action(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute action from raw input."""
+        img_feats = self.extract_image(x)
+        return self.actor(img_feats)
 
     def get_action_and_value(
-        self, x: torch.Tensor, action: torch.Tensor = None
+        self, x: torch.Tensor, action: torch.Tensor | None = None
     ) -> tuple:
         """Compute action, log-prob, entropy, and value for input states."""
         img_feats = self.extract_image(x)
-        h = self.feature_net(img_feats)
-
-        mean = self.actor_mean(h)
-        logstd = self.actor_logstd.expand_as(mean)
-        std = torch.exp(logstd)
-        dist = Normal(mean, std)
-
+        action_mean = self.actor(img_feats)
+        action_std = self.actor_std.expand_as(action_mean)
+        if self.noise_std_type == "log":
+            action_std = torch.clamp(action_std, -20.0, 5.0)
+            action_std = torch.exp(action_std)
+        elif self.noise_std_type == "scalar":
+            action_std = torch.clamp(action_std, min=1e-6)
+        dist = Normal(action_mean, action_std)
         if action is None:
-            action = dist.rsample()
+            action = dist.sample()
+        return (
+            action,
+            dist.log_prob(action).sum(dim=-1),
+            dist.entropy().sum(dim=-1),
+            self.critic(img_feats),
+            action_mean,
+            action_std,
+        )
 
-        logprob = dist.log_prob(action).sum(dim=1)
-        entropy = dist.entropy().sum(dim=1)
-        value = self.critic(h).view(-1)
-
-        return action.clamp_(-1, 1), logprob, entropy, value
+    def forward(self, obs):
+        return self.get_action(obs)
