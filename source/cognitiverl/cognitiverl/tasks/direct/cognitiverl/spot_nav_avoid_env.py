@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 
 import torch
 from isaaclab.sensors.camera import TiledCamera, TiledCameraCfg
@@ -48,6 +49,14 @@ class SpotNavAvoidEnv(NavEnv):
         # Add accumulated laziness tracker
         self._accumulated_laziness = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.float32
+        )
+
+        # Add avoid goal collision tracking
+        self._episode_avoid_collisions = torch.zeros(
+            (self.num_envs), device=self.device, dtype=torch.int32
+        )
+        self._avoid_goal_hit_this_step = torch.zeros(
+            (self.num_envs), device=self.device, dtype=torch.bool
         )
 
     def _setup_robot_dof_idx(self):
@@ -109,7 +118,9 @@ class SpotNavAvoidEnv(NavEnv):
         self.max_episode_length_buf = torch.full(
             (self.num_envs,), self.max_episode_length, device=self.device
         )
-        self.avoid_position_tolerance = self.cfg.avoid_position_tolerance
+
+        # Add avoid penalty weight
+        self.avoid_penalty_weight = self.cfg.avoid_penalty_weight
 
     def _setup_camera(self):
         camera_prim_path = "/World/envs/env_.*/Robot/body/Camera"
@@ -200,21 +211,14 @@ class SpotNavAvoidEnv(NavEnv):
             dim=-1,
         )
 
-    def _calculate_avoid_distances(self) -> torch.Tensor:
-        """Calculate minimum distance from robot to closest avoidance marker."""
-        robot_pos = self.robot.data.root_pos_w[:, :2]  # [num_envs, 2]
-
-        # Calculate distances to all avoidance markers
-        avoid_distances = torch.norm(
-            self._avoid_positions
-            - robot_pos.unsqueeze(1),  # [num_envs, num_avoid_goals, 2]
-            dim=-1,
-        )  # [num_envs, num_avoid_goals]
-
-        # Find minimum distance to any avoidance marker
-        min_avoid_distance = torch.min(avoid_distances, dim=-1)[0]  # [num_envs]
-
-        return min_avoid_distance
+    # def _check_stuck_termination(self, max_steps: int = 300) -> torch.Tensor:
+    #     """Early termination if robot is stuck/wandering without progress"""
+    #     # If no goal reached in last max_steps and barely moving, terminate
+    #     steps_since_goal = (
+    #         self.episode_length_buf - self._previous_waypoint_reached_step
+    #     )
+    #     stuck_too_long = steps_since_goal > max_steps
+    #     return stuck_too_long
 
     def _get_rewards(self) -> dict[str, torch.Tensor]:
         goal_reached = self._position_error < self.position_tolerance
@@ -227,6 +231,55 @@ class SpotNavAvoidEnv(NavEnv):
             posinf=0.0,
             neginf=0.0,
         )
+
+        # Check for avoid goal collisions (future waypoints) - VECTORIZED VERSION
+        robot_positions = self.robot.data.root_pos_w[:, :2]  # (num_envs, 2)
+        avoid_penalty = torch.zeros(
+            (self.num_envs), device=self.device, dtype=torch.float32
+        )
+
+        # Reset step-level collision tracker
+        self._avoid_goal_hit_this_step.fill_(False)
+
+        # Create mask for future waypoints (goals with index > current target index)
+        goal_indices = torch.arange(self._num_goals, device=self.device).unsqueeze(
+            0
+        )  # (1, num_goals)
+        target_indices = self._target_index.unsqueeze(1)  # (num_envs, 1)
+        future_waypoint_mask = goal_indices > target_indices  # (num_envs, num_goals)
+
+        # Calculate distances from each robot to all waypoints
+        # robot_positions: (num_envs, 2) -> (num_envs, 1, 2)
+        # _target_positions: (num_envs, num_goals, 2)
+        robot_pos_expanded = robot_positions.unsqueeze(1)  # (num_envs, 1, 2)
+        distances = torch.norm(
+            robot_pos_expanded - self._target_positions, dim=2
+        )  # (num_envs, num_goals)
+
+        # Apply future waypoint mask and check for collisions
+        future_distances = (
+            distances * future_waypoint_mask.float()
+        )  # Zero out non-future waypoints
+        future_distances = torch.where(
+            future_waypoint_mask,
+            future_distances,
+            torch.full_like(future_distances, float("inf")),  # Set non-future to inf
+        )
+
+        # Check which environments have collisions with future waypoints
+        collision_mask = (
+            future_distances < self.position_tolerance
+        )  # (num_envs, num_goals)
+        env_has_collision = collision_mask.any(dim=1)  # (num_envs,)
+
+        # Apply penalties for environments with collisions
+        avoid_penalty[env_has_collision] = self.avoid_penalty_weight
+        self._avoid_goal_hit_this_step[env_has_collision] = True
+
+        # Count collisions per environment (sum of collision_mask per env)
+        collisions_per_env = collision_mask.sum(dim=1)  # (num_envs,)
+        self._episode_avoid_collisions += collisions_per_env
+
         self._target_index = self._target_index + goal_reached
         self._episode_waypoints_passed += goal_reached.int()
         self.task_completed = self._target_index > (self._num_goals - 1)
@@ -334,36 +387,149 @@ class SpotNavAvoidEnv(NavEnv):
         marker_indices = marker_indices.view(-1).tolist()
         # Update visualizations
         self.waypoints.visualize(marker_indices=marker_indices)
-
-        # Calculate minimum distance to avoidance markers
-        self._min_avoid_distance = self._calculate_avoid_distances()
-
         return {
             "Episode_Reward/goal_reached_reward": goal_reached_reward,
             "Episode_Reward/linear_speed_reward": linear_speed_reward,
             "Episode_Reward/laziness_penalty": laziness_penalty,
             "Episode_Reward/wall_penalty": wall_penalty,
             "Episode_Reward/fast_goal_reached_reward": fast_goal_reached_reward,
+            "Episode_Reward/avoid_penalty": avoid_penalty,
         }
+
+    def _generate_waypoints_with_spacing(self, env_ids, robot_poses, min_spacing=3.0):
+        """Generate waypoints ensuring minimum spacing between them and from robot spawn - VECTORIZED."""
+        num_reset = len(env_ids)
+        env_origins = self.scene.env_origins[env_ids, :2]  # (num_reset, 2)
+        robot_xy = robot_poses[:, :2]  # (num_reset, 2)
+
+        # Initialize waypoint positions
+        waypoint_positions = torch.zeros(
+            (num_reset, self._num_goals, 2), device=self.device
+        )
+
+        # Constrain waypoints to 60% of distance from center to wall
+        max_distance_from_center = 0.6 * (self.wall_position - self.wall_thickness / 2)
+
+        # Generate waypoints sequentially (to maintain spacing constraints)
+        for goal_idx in range(self._num_goals):
+            max_attempts = 100
+            placed = torch.zeros(num_reset, dtype=torch.bool, device=self.device)
+
+            for attempt in range(max_attempts):
+                # Generate candidates for all unplaced environments
+                unplaced_mask = ~placed
+                num_unplaced = unplaced_mask.sum().item()
+
+                if num_unplaced == 0:
+                    break
+
+                # Generate random positions for unplaced environments
+                tx = (
+                    torch.rand(num_unplaced, device=self.device)
+                    * 2
+                    * max_distance_from_center
+                    - max_distance_from_center
+                )
+                ty = (
+                    torch.rand(num_unplaced, device=self.device)
+                    * 2
+                    * max_distance_from_center
+                    - max_distance_from_center
+                )
+
+                # Convert to world coordinates
+                unplaced_origins = env_origins[unplaced_mask]  # (num_unplaced, 2)
+                candidate_positions = (
+                    torch.stack([tx, ty], dim=1) + unplaced_origins
+                )  # (num_unplaced, 2)
+
+                # Check distance from robot (minimum 2.5m)
+                unplaced_robot_pos = robot_xy[unplaced_mask]  # (num_unplaced, 2)
+                robot_distances = torch.norm(
+                    candidate_positions - unplaced_robot_pos, dim=1
+                )  # (num_unplaced,)
+                robot_valid = robot_distances >= 2.5
+
+                # Check distance from previously placed waypoints in same environment
+                waypoint_valid = torch.ones(
+                    num_unplaced, dtype=torch.bool, device=self.device
+                )
+                if goal_idx > 0:
+                    # Get previously placed waypoints for unplaced environments
+                    prev_waypoints = waypoint_positions[
+                        unplaced_mask, :goal_idx, :
+                    ]  # (num_unplaced, goal_idx, 2)
+
+                    # Calculate distances to all previous waypoints
+                    candidate_expanded = candidate_positions.unsqueeze(
+                        1
+                    )  # (num_unplaced, 1, 2)
+                    distances_to_prev = torch.norm(
+                        candidate_expanded - prev_waypoints, dim=2
+                    )  # (num_unplaced, goal_idx)
+
+                    # Check if any distance is too small
+                    min_distances = distances_to_prev.min(dim=1)[0]  # (num_unplaced,)
+                    waypoint_valid = min_distances >= min_spacing
+
+                # Combine all validity checks
+                valid = robot_valid & waypoint_valid
+
+                # Update positions for valid placements
+                valid_indices = torch.where(unplaced_mask)[0][valid]
+                if len(valid_indices) > 0:
+                    waypoint_positions[valid_indices, goal_idx, :] = (
+                        candidate_positions[valid]
+                    )
+                    placed[valid_indices] = True
+
+            # Fallback for any remaining unplaced waypoints
+            if not placed.all():
+                unplaced_mask = ~placed
+                num_unplaced = unplaced_mask.sum().item()
+
+                # Use relaxed constraints - smaller area but guaranteed placement
+                tx = (
+                    torch.rand(num_unplaced, device=self.device)
+                    * max_distance_from_center
+                    - max_distance_from_center / 2
+                )
+                ty = (
+                    torch.rand(num_unplaced, device=self.device)
+                    * max_distance_from_center
+                    - max_distance_from_center / 2
+                )
+
+                unplaced_origins = env_origins[unplaced_mask]
+                fallback_positions = torch.stack([tx, ty], dim=1) + unplaced_origins
+
+                unplaced_indices = torch.where(unplaced_mask)[0]
+                waypoint_positions[unplaced_indices, goal_idx, :] = fallback_positions
+
+        return waypoint_positions
 
     def _reset_idx(self, env_ids: Sequence[int] | None):
         if env_ids is None:
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
         self.camera.reset(env_ids)
-        # self.max_episode_length_buf[env_ids] = self.max_episode_length
-        min_episode_length = min(
-            200 + self.common_step_counter, int(0.7 * self.max_episode_length)
-        )
-        self.max_episode_length_buf[env_ids] = torch.randint(
-            min_episode_length,
-            self.max_episode_length + 1,
-            (len(env_ids),),
-            device=self.device,
-        )
+        if self.play_mode:
+            self.max_episode_length_buf[env_ids] = self.max_episode_length
+        else:
+            min_episode_length = min(
+                200 + self.common_step_counter, int(0.7 * self.max_episode_length)
+            )
+            self.max_episode_length_buf[env_ids] = torch.randint(
+                min_episode_length,
+                self.max_episode_length + 1,
+                (len(env_ids),),
+                device=self.device,
+            )
 
         self._episode_reward_buf[env_ids] = 0.0
         self._episode_waypoints_passed[env_ids] = 0
+        # Reset avoid collision counter
+        self._episode_avoid_collisions[env_ids] = 0
         if hasattr(self, "_previous_waypoint_reached_step"):
             self._previous_waypoint_reached_step[env_ids] = 0
 
@@ -410,114 +576,11 @@ class SpotNavAvoidEnv(NavEnv):
         self._target_positions[env_ids, :, :] = 0.0
         self._markers_pos[env_ids, :, :] = 0.0
 
-        # Generate random positions within the square room (vectorized)
-        margin = self.cfg.position_tolerance + self.cfg.position_margin_epsilon
-        for i in range(self._num_goals):
-            robot_xy = robot_pose[:, :2]  # shape: (num_reset, 2)
-            env_origins = self.scene.env_origins[env_ids, :2]  # shape: (num_reset, 2)
-            num_reset = len(env_ids)
-            if i == 0:
-                # First goal: must satisfy margin from robot
-                N = 20  # number of candidates per env
-                N1 = N // 2
-                N2 = N - N1
-                # First half: smaller range
-                tx_cand1 = (
-                    torch.rand(num_reset, N1, device=self.device) * self.room_size / 2
-                    - self.room_size / 4
-                )
-                ty_cand1 = (
-                    torch.rand(num_reset, N1, device=self.device) * self.room_size / 2
-                    - self.room_size / 4
-                )
-                # Second half: larger range
-                tx_cand2 = (
-                    torch.rand(num_reset, N2, device=self.device) * self.room_size
-                    - self.room_size / 2
-                )
-                ty_cand2 = (
-                    torch.rand(num_reset, N2, device=self.device) * self.room_size
-                    - self.room_size / 2
-                )
-                # Concatenate
-                tx_cand = torch.cat([tx_cand1, tx_cand2], dim=1)
-                ty_cand = torch.cat([ty_cand1, ty_cand2], dim=1)
-                # Clip to wall margin
-                tx_cand = tx_cand.clip(
-                    min=-self.wall_position
-                    + self.wall_thickness / 2
-                    + self.cfg.position_tolerance,
-                    max=self.wall_position
-                    - self.wall_thickness / 2
-                    - self.cfg.position_tolerance,
-                )
-                ty_cand = ty_cand.clip(
-                    min=-self.wall_position
-                    + self.wall_thickness / 2
-                    + self.cfg.position_tolerance,
-                    max=self.wall_position
-                    - self.wall_thickness / 2
-                    - self.cfg.position_tolerance,
-                )
-                # Offset by environment origin
-                tx_cand = tx_cand + env_origins[:, 0:1]
-                ty_cand = ty_cand + env_origins[:, 1:2]
-                # Compute distances to robot
-                dx = tx_cand - robot_xy[:, 0:1]
-                dy = ty_cand - robot_xy[:, 1:2]
-                dist = (dx**2 + dy**2).sqrt()  # shape: (num_reset, N)
-                valid = dist >= margin
-                # For each env, pick the first valid candidate, else last
-                first_valid_idx = valid.float().argmax(dim=1)
-                has_valid = valid.any(dim=1)
-                # If no valid, use last candidate
-                first_valid_idx = torch.where(
-                    has_valid, first_valid_idx, torch.full_like(first_valid_idx, N - 1)
-                )
-                tx = tx_cand[torch.arange(num_reset), first_valid_idx]
-                ty = ty_cand[torch.arange(num_reset), first_valid_idx]
-                self._target_positions[env_ids, i, 0] = tx
-                self._target_positions[env_ids, i, 1] = ty
-            else:
-                # Other goals: no margin validation, just sample and assign
-                tx = (
-                    torch.rand(num_reset, device=self.device) * self.room_size / 2
-                    - self.room_size / 4
-                )
-                ty = (
-                    torch.rand(num_reset, device=self.device) * self.room_size / 2
-                    - self.room_size / 4
-                )
-                tx = tx.clip(
-                    min=-self.wall_position
-                    + self.wall_thickness / 2
-                    + self.cfg.position_tolerance,
-                    max=self.wall_position
-                    - self.wall_thickness / 2
-                    - self.cfg.position_tolerance,
-                )
-                ty = ty.clip(
-                    min=-self.wall_position
-                    + self.wall_thickness / 2
-                    + self.cfg.position_tolerance,
-                    max=self.wall_position
-                    - self.wall_thickness / 2
-                    - self.cfg.position_tolerance,
-                )
-                self._target_positions[env_ids, i, 0] = tx + env_origins[:, 0]
-                self._target_positions[env_ids, i, 1] = ty + env_origins[:, 1]
-
-        # Verify only the first goal maintains minimum distance from robot
-        robot_xy = robot_pose[:, :2]  # Get robot XY positions
-        tx = self._target_positions[env_ids, 0, 0]  # First goal X positions
-        ty = self._target_positions[env_ids, 0, 1]  # First goal Y positions
-        dist = ((tx - robot_xy[:, 0]) ** 2 + (ty - robot_xy[:, 1]) ** 2).sqrt()
-        min_dist = dist.min().item()
-        if not torch.all(dist >= margin):
-            raise ValueError(
-                f"Invalid target placement: Some first-goal targets are too close to robot. "
-                f"Minimum distance {min_dist:.2f} is less than required margin {margin:.2f}"
-            )
+        # Generate waypoints with proper spacing
+        waypoint_positions = self._generate_waypoints_with_spacing(
+            env_ids, robot_pose, min_spacing=3.0
+        )
+        self._target_positions[env_ids] = waypoint_positions
 
         self._target_index[env_ids] = 0
         self._markers_pos[env_ids, :, :2] = self._target_positions[env_ids]
@@ -542,31 +605,3 @@ class SpotNavAvoidEnv(NavEnv):
             torch.sin(target_heading_w - heading), torch.cos(target_heading_w - heading)
         )
         self._previous_heading_error = self._heading_error.clone()
-
-    def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor, dict]:
-        """Override parent method to add avoidance termination."""
-        # Get parent termination conditions
-        terminated, truncated, info = (
-            super()._get_dones()
-            if hasattr(super(), "_get_dones")
-            else (
-                torch.zeros(self.num_envs, device=self.device, dtype=torch.bool),
-                torch.zeros(self.num_envs, device=self.device, dtype=torch.bool),
-                {},
-            )
-        )
-
-        # Calculate current distances and check termination condition
-        min_avoid_distance = self._calculate_avoid_distances()
-
-        # Termination when robot gets within tolerance radius of any avoidance marker
-        avoid_termination = min_avoid_distance < self.avoid_position_tolerance
-
-        # Combine termination conditions
-        terminated = terminated | avoid_termination
-
-        # Add avoidance termination info
-        info["Episode_Termination/avoid_termination"] = avoid_termination
-        info["Metrics/min_avoid_distance"] = min_avoid_distance  # For debugging/logging
-
-        return terminated, truncated, info

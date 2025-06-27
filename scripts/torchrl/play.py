@@ -12,8 +12,8 @@ import wandb
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from isaaclab.utils import configclass
 from models import CNNPPOAgent
-from utils import load_args  # add load_args import
-
+from utils import load_args, print_dict  # add load_args import
+from termcolor import colored
 ### TODO : Make play callable while training and after training.
 ### Solution - Use ManagerBasedRL or multi threading or multiprocessing to run train and eval.
 
@@ -106,7 +106,6 @@ def make_isaaclab_env(
 ):
     import isaaclab_tasks  # noqa: F401
     from isaaclab_rl.torchrl import (
-        IsaacLabRecordEpisodeStatistics,
         IsaacLabVecEnvWrapper,
     )
     from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
@@ -123,8 +122,8 @@ def make_isaaclab_env(
             render_mode="rgb_array"
             if (capture_video and log_dir is not None)
             else None,
+            play_mode=True,
         )
-        env = IsaacLabRecordEpisodeStatistics(env)
         if capture_video and log_dir is not None:
             video_kwargs = {
                 "video_folder": os.path.join(log_dir, "videos", "play"),
@@ -140,6 +139,7 @@ def make_isaaclab_env(
 
 
 def main(args):
+    print_dict(args)
     run_name = f"{args.task}__{args.exp_name}"
     run = wandb.init(
         project="play",
@@ -170,6 +170,7 @@ def main(args):
 
     agent_class = AGENT_LOOKUP[args.agent]
     agent = agent_class(n_obs, n_act)
+    print(colored("[INFO] : Loading agent from {args.checkpoint_path}", "green", attrs=["bold"]))
     agent.load_state_dict(torch.load(args.checkpoint_path))
     device = (
         torch.device(args.device) if torch.cuda.is_available() else torch.device("cpu")
@@ -187,7 +188,7 @@ def main(args):
         done = torch.zeros(args.num_eval_envs, dtype=torch.bool)
         pbar = tqdm.tqdm(total=args.num_eval_env_steps)
         while step < args.num_eval_env_steps and not done.all():
-            action, _, _, _ = play_agent.get_action_and_value(obs)
+            action = play_agent.get_action(obs)
             obs, _, done, _ = eval_envs.step(action)
             step += 1
             global_step += args.num_eval_envs

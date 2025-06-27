@@ -27,6 +27,7 @@ class NavEnv(DirectRLEnv):
         render_mode: str | None = None,
         debug: bool = False,
         max_total_steps: int | None = None,
+        play_mode: bool = False,
         **kwargs,
     ):
         # Add room size as a class attribut
@@ -79,6 +80,7 @@ class NavEnv(DirectRLEnv):
         self._debug = debug
         self._setup_config()
         self.max_total_steps = max_total_steps
+        self.play_mode = play_mode
 
     def _setup_config(self):
         raise NotImplementedError("Subclass must implement this method")
@@ -298,6 +300,16 @@ class NavEnv(DirectRLEnv):
             log_infos["Metrics/max_episode_return"] = (
                 self._episode_reward_buf[env_ids].float().max().item()
             )
+
+            # Add avoid goal collision metrics if they exist
+            if hasattr(self, "_episode_avoid_collisions"):
+                log_infos["Metrics/avoid_collisions_per_episode"] = torch.mean(
+                    self._episode_avoid_collisions[env_ids].float()
+                ).item()
+                log_infos["Metrics/max_avoid_collisions_per_episode"] = (
+                    self._episode_avoid_collisions[env_ids].float().max().item()
+                )
+
             self.extras["log"].update(log_infos)
 
     def step(self, action: torch.Tensor) -> VecEnvStepReturn:
@@ -562,16 +574,18 @@ class NavEnv(DirectRLEnv):
             env_ids = self.robot._ALL_INDICES
         super()._reset_idx(env_ids)
         self.camera.reset(env_ids)
-        # self.max_episode_length_buf[env_ids] = self.max_episode_length
-        min_episode_length = min(
-            200 + self.common_step_counter, int(0.7 * self.max_episode_length)
-        )
-        self.max_episode_length_buf[env_ids] = torch.randint(
-            min_episode_length,
-            self.max_episode_length + 1,
-            (len(env_ids),),
-            device=self.device,
-        )
+        if self.play_mode:
+            self.max_episode_length_buf[env_ids] = self.max_episode_length
+        else:
+            min_episode_length = min(
+                200 + self.common_step_counter, int(0.7 * self.max_episode_length)
+            )
+            self.max_episode_length_buf[env_ids] = torch.randint(
+                min_episode_length,
+                self.max_episode_length + 1,
+                (len(env_ids),),
+                device=self.device,
+            )
 
         self._episode_reward_buf[env_ids] = 0.0
         self._episode_waypoints_passed[env_ids] = 0

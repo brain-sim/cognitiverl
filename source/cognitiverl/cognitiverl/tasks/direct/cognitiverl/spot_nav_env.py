@@ -273,7 +273,7 @@ class SpotNavEnv(NavEnv):
         )
         # Calculate laziness penalty using log
         laziness_penalty = torch.nan_to_num(
-            -self.laziness_penalty_weight * torch.log1p(self._accumulated_laziness),
+            self.laziness_penalty_weight * torch.log1p(self._accumulated_laziness),
             posinf=0.0,
             neginf=0.0,
         )  # log1p(x) = log(1 + x)
@@ -287,7 +287,7 @@ class SpotNavEnv(NavEnv):
             torch.where(
                 min_wall_dist > danger_distance,
                 torch.zeros_like(min_wall_dist),
-                -self.wall_penalty_weight
+                self.wall_penalty_weight
                 * torch.exp(
                     1.0 - min_wall_dist / danger_distance
                 ),  # Exponential penalty

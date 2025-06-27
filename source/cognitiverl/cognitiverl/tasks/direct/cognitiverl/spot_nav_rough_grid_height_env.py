@@ -11,6 +11,7 @@ from isaaclab.sim.spawners.sensors.sensors_cfg import PinholeCameraCfg
 from isaaclab.terrains import TerrainImporter, TerrainImporterCfg
 from termcolor import colored
 
+from .load_usd import enable_terrain_collision, load_from_usd
 from .nav_env import NavEnv
 from .spot_nav_rough_env_cfg import SpotNavRoughEnvCfg
 from .spot_policy_controller import (
@@ -62,41 +63,70 @@ class SpotNavRoughGridHeightEnv(NavEnv):
         self._dof_idx, _ = self.robot.find_joints(self.cfg.dof_name)
 
     def _setup_plane(self):
-        # Create robust rough terrain configuration with safe parameters
-        terrain_cfg = TerrainImporterCfg(
-            prim_path="/World/ground",
-            terrain_type="generator",
-            terrain_generator=terrain_gen.TerrainGeneratorCfg(
-                seed=1,
-                use_cache=True,
-                size=(200.0, 200.0),  # Size of terrain
-                num_rows=1,  # Single terrain patch
-                num_cols=1,  # Single terrain patch
-                sub_terrains={
-                    "grid_terrain": terrain_gen.MeshRandomGridTerrainCfg(
-                        proportion=1.0,
-                        grid_width=0.45,
-                        grid_height_range=(0.01, 0.06),
-                        platform_width=3.0,
-                    ),
-                },
-            ),
-            visual_material=sim_utils.PreviewSurfaceCfg(
-                diffuse_color=(0.06, 0.08, 0.1),  # Dark blue-gray color
-            ),
-            max_init_terrain_level=0,  # Single level to avoid complexity
-            debug_vis=False,
-            physics_material=sim_utils.RigidBodyMaterialCfg(
-                friction_combine_mode="multiply",
-                restitution_combine_mode="multiply",
-                static_friction=max(self.cfg.static_friction, 0.1),  # Ensure >= 0.1
-                dynamic_friction=max(self.cfg.dynamic_friction, 0.1),  # Ensure >= 0.1
-                restitution=0.0,
-            ),
-        )
+        if (
+            hasattr(self.cfg, "grid_terrain_path")
+            and self.cfg.grid_terrain_path is not None
+        ):
+            print(
+                colored(
+                    f"[INFO] Loading grid terrain from {self.cfg.grid_terrain_path}",
+                    "green",
+                )
+            )
+            result = load_from_usd(
+                os.path.join(
+                    os.path.dirname(os.path.dirname(__file__)),
+                    "custom_assets",
+                    self.cfg.grid_terrain_path,
+                )
+            )
+            print("✅ Terrain loaded successfully from USD!, the result is: ", result)
+            terrain_loaded = result is not None
+            # Handle both TerrainImporter object and boolean returns
+            terrain_importer = result
 
-        # Create the terrain importer
-        terrain_importer = TerrainImporter(terrain_cfg)
+            # Enable collision for loaded terrain too
+            if terrain_loaded:
+                enable_terrain_collision()
+
+        else:
+            # Create robust rough terrain configuration with safe parameters
+            terrain_cfg = TerrainImporterCfg(
+                prim_path="/World/ground",
+                terrain_type="generator",
+                terrain_generator=terrain_gen.TerrainGeneratorCfg(
+                    seed=1,
+                    use_cache=True,
+                    size=(200.0, 200.0),  # Size of terrain
+                    num_rows=1,  # Single terrain patch
+                    num_cols=1,  # Single terrain patch
+                    sub_terrains={
+                        "grid_terrain": terrain_gen.MeshRandomGridTerrainCfg(
+                            proportion=1.0,
+                            grid_width=0.45,
+                            grid_height_range=(0.01, 0.06),
+                            platform_width=3.0,
+                        ),
+                    },
+                ),
+                visual_material=sim_utils.PreviewSurfaceCfg(
+                    diffuse_color=(0.06, 0.08, 0.1),  # Dark blue-gray color
+                ),
+                max_init_terrain_level=0,  # Single level to avoid complexity
+                debug_vis=False,
+                physics_material=sim_utils.RigidBodyMaterialCfg(
+                    friction_combine_mode="multiply",
+                    restitution_combine_mode="multiply",
+                    static_friction=max(self.cfg.static_friction, 0.1),  # Ensure >= 0.1
+                    dynamic_friction=max(
+                        self.cfg.dynamic_friction, 0.1
+                    ),  # Ensure >= 0.1
+                    restitution=0.0,
+                ),
+            )
+
+            # Create the terrain importer
+            terrain_importer = TerrainImporter(terrain_cfg)
         self._terrain_importer = terrain_importer
 
     def _setup_config(self):
@@ -182,7 +212,7 @@ class SpotNavRoughGridHeightEnv(NavEnv):
                 size=[1.0, 1.0],  # 1m x 1m grid area
                 direction=(0.0, 0.0, -1.0),  # Point directly downward
             ),
-            debug_vis=True,
+            debug_vis=False,
             mesh_prim_paths=["/World/ground"],
             max_distance=50.0,  # Maximum detection distance
             update_period=self.step_dt,
@@ -340,7 +370,7 @@ class SpotNavRoughGridHeightEnv(NavEnv):
 
         # Calculate laziness penalty using log
         laziness_penalty = torch.nan_to_num(
-            -self.laziness_penalty_weight * torch.log1p(self._accumulated_laziness),
+            self.laziness_penalty_weight * torch.log1p(self._accumulated_laziness),
             posinf=0.0,
             neginf=0.0,
         )  # log1p(x) = log(1 + x)
@@ -354,7 +384,7 @@ class SpotNavRoughGridHeightEnv(NavEnv):
             torch.where(
                 min_wall_dist > danger_distance,
                 torch.zeros_like(min_wall_dist),
-                -self.wall_penalty_weight
+                self.wall_penalty_weight
                 * torch.exp(
                     1.0 - min_wall_dist / danger_distance
                 ),  # Exponential penalty

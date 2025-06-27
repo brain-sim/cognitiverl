@@ -92,6 +92,7 @@ def make_isaaclab_env(
             if (capture_video and log_dir is not None)
             else None,
             debug=False,
+            play_mode=True,
         )
         return env
 
