@@ -16,7 +16,7 @@ from .waypoint import WAYPOINT_CFG
 class SpotNavAvoidEnvCfg(NavEnvCfg):
     decimation = 16  # 2
     render_interval = 16
-    episode_length_s = 70.0
+    episode_length_s = 60.0
     action_space = 3
     observation_space = 3076  # Changed from 8 to 9 to include minimum wall distance
     policy_file_path = "spot_policy_custom_rslrl.pt"
@@ -52,7 +52,7 @@ class SpotNavAvoidEnvCfg(NavEnvCfg):
     wall_penalty_weight = -0.2  # -0.2
     linear_speed_weight = 0.0  # 0.05
     laziness_penalty_weight = 0.0  # -0.3
-    avoid_penalty_weight = -1.0  # 0.0
+    avoid_penalty_weight = -0.1  # 0.0
     # angular_speed_weight = 0.1  # 0.05
     # flip_penalty_weight = 100.0
 

@@ -12,8 +12,9 @@ import wandb
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from isaaclab.utils import configclass
 from models import CNNPPOAgent
-from utils import load_args, print_dict  # add load_args import
 from termcolor import colored
+from utils import load_args, print_dict  # add load_args import
+
 ### TODO : Make play callable while training and after training.
 ### Solution - Use ManagerBasedRL or multi threading or multiprocessing to run train and eval.
 
@@ -47,6 +48,10 @@ class EnvArgs:
     """run training in headless mode"""
     enable_cameras: bool = False
     """enable cameras to record sensor inputs."""
+    renderer: str = "PathTracing"  # "PathTracing" or "RayTraced"
+    """Renderer to use."""
+    samples_per_pixel_per_frame: int = 1
+    """Number of samples per pixel per frame."""
 
 
 @configclass
@@ -170,7 +175,13 @@ def main(args):
 
     agent_class = AGENT_LOOKUP[args.agent]
     agent = agent_class(n_obs, n_act)
-    print(colored("[INFO] : Loading agent from {args.checkpoint_path}", "green", attrs=["bold"]))
+    print(
+        colored(
+            "[INFO] : Loading agent from {args.checkpoint_path}",
+            "green",
+            attrs=["bold"],
+        )
+    )
     agent.load_state_dict(torch.load(args.checkpoint_path))
     device = (
         torch.device(args.device) if torch.cuda.is_available() else torch.device("cpu")
