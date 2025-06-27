@@ -549,6 +549,15 @@ def main(args):
                 {"learning_rate": optimizer.param_groups[0]["lr"]}, step=global_step
             )
 
+        # ADD THIS: Apply adaptive learning rate after the update epochs
+        if args.adaptive_lr:
+            new_lr = update_learning_rate_adaptive(
+                optimizer, approx_kl.item(), args.desired_kl, args.lr_multiplier
+            )
+            # Log the learning rate change
+            if global_step_burnin is not None and iteration % args.log_interval == 0:
+                wandb.log({"learning_rate": new_lr}, step=global_step)
+
         y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
@@ -652,6 +661,7 @@ def main(args):
                 best_ckpt = ckpt_path
 
         avg_returns = 0.0
+
         # Update iteration progress bar
         iteration_pbar.update(1)
 

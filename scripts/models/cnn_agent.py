@@ -46,6 +46,7 @@ class CNNPPOAgent(nn.Module):
             feature_size = self.backbone(dummy).view(1, -1).size(1)
 
         # MLP for extracted features
+
         actor_layers = []
         critic_layers = []
         for i in range(len(actor_hidden_dims)):
@@ -73,6 +74,7 @@ class CNNPPOAgent(nn.Module):
         else:
             raise ValueError(f"Invalid noise_std_type: {self.noise_std_type}")
         Normal.set_default_validate_args(False)
+
 
     def extract_image(self, x: torch.Tensor) -> torch.Tensor:
         """Extract features from image portion of the state vector."""
