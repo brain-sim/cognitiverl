@@ -135,6 +135,8 @@ class ExperimentArgs:
 
     img_size: List[int] = [3, 32, 32]
     """the size of the image"""
+    resume_from_checkpoint: str = ""
+    """the path to the checkpoint to resume from"""
 
 
 @configclass
@@ -295,11 +297,29 @@ def main(args):
 
     if args.agent_type == "CNNPPOAgent":
         print("img_size:", envs.unwrapped.cfg.img_size)
-        agent = CNNPPOAgent(n_obs, n_act, img_size=envs.unwrapped.cfg.img_size).to(
-            device
-        )
+        agent = CNNPPOAgent(n_obs, n_act, img_size=envs.unwrapped.cfg.img_size)
+        if args.resume_from_checkpoint:
+            agent.load_from_checkpoint(args.resume_from_checkpoint)
+            print(
+                colored(
+                    f"Loaded checkpoint from {args.resume_from_checkpoint}",
+                    "green",
+                    attrs=["bold"],
+                )
+            )
+        agent.to(device)
     else:
-        agent = MLPPPOAgent(n_obs, n_act).to(device)
+        agent = MLPPPOAgent(n_obs, n_act)
+        if args.resume_from_checkpoint:
+            agent.load_from_checkpoint(args.resume_from_checkpoint)
+            print(
+                colored(
+                    f"Loaded checkpoint from {args.resume_from_checkpoint}",
+                    "green",
+                    attrs=["bold"],
+                )
+            )
+        agent.to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
