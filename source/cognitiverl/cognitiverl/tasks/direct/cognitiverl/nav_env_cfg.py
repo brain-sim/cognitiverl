@@ -43,3 +43,7 @@ class NavEnvCfg(DirectRLEnvCfg):
     wall_height = 3.0
     position_tolerance = waypoint_cfg.markers["marker1"].radius
     position_margin_epsilon = 0.2
+
+    # Terminations
+    termination_on_goal_reached = True
+    termination_on_vehicle_flip = True

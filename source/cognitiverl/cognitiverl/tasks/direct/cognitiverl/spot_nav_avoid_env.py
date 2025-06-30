@@ -122,6 +122,14 @@ class SpotNavAvoidEnv(NavEnv):
         # Add avoid penalty weight
         self.avoid_penalty_weight = self.cfg.avoid_penalty_weight
         self.fast_goal_reached_bonus = self.cfg.fast_goal_reached_weight
+        self.avoid_goal_position_tolerance = self.cfg.avoid_goal_position_tolerance
+
+        self.termination_on_avoid_goal_collision = (
+            self.cfg.termination_on_avoid_goal_collision
+        )
+        self.termination_on_goal_reached = self.cfg.termination_on_goal_reached
+        self.termination_on_vehicle_flip = self.cfg.termination_on_vehicle_flip
+        self.termination_on_stuck = self.cfg.termination_on_stuck
 
     def _setup_camera(self):
         camera_prim_path = "/World/envs/env_.*/Robot/body/Camera"
@@ -136,8 +144,8 @@ class SpotNavAvoidEnv(NavEnv):
         camera_cfg = TiledCameraCfg(
             prim_path=camera_prim_path,
             update_period=self.step_dt,
-            height=32,
-            width=32,
+            height=self.cfg.img_size[1],
+            width=self.cfg.img_size[2],
             data_types=["rgb"],
             spawn=pinhole_cfg,
             offset=TiledCameraCfg.OffsetCfg(
@@ -196,7 +204,6 @@ class SpotNavAvoidEnv(NavEnv):
 
     def _get_image_obs(self) -> torch.Tensor:
         image_obs = self.camera.data.output["rgb"].float().permute(0, 3, 1, 2) / 255.0
-        # image_obs = F.interpolate(image_obs, size=(32, 32), mode='bilinear', align_corners=False)
         image_obs = image_obs.reshape(self.num_envs, -1)
         return image_obs
 
@@ -221,26 +228,10 @@ class SpotNavAvoidEnv(NavEnv):
     #     stuck_too_long = steps_since_goal > max_steps
     #     return stuck_too_long
 
-    def _get_rewards(self) -> dict[str, torch.Tensor]:
-        goal_reached = self._position_error < self.position_tolerance
-        goal_reached_reward = self.goal_reached_bonus * torch.nan_to_num(
-            torch.where(
-                goal_reached,
-                1.0,
-                torch.zeros_like(self._position_error),
-            ),
-            posinf=0.0,
-            neginf=0.0,
-        )
-
+    def _check_avoid_goal_collision(self) -> torch.Tensor:
+        """Check if the robot has collided with the avoid goal"""
         # Check for avoid goal collisions (future waypoints) - VECTORIZED VERSION
         robot_positions = self.robot.data.root_pos_w[:, :2]  # (num_envs, 2)
-        avoid_penalty = torch.zeros(
-            (self.num_envs), device=self.device, dtype=torch.float32
-        )
-
-        # Reset step-level collision tracker
-        self._avoid_goal_hit_this_step.fill_(False)
 
         # Create mask for future waypoints (goals with index > current target index)
         goal_indices = torch.arange(self._num_goals, device=self.device).unsqueeze(
@@ -269,17 +260,31 @@ class SpotNavAvoidEnv(NavEnv):
 
         # Check which environments have collisions with future waypoints
         collision_mask = (
-            future_distances < self.position_tolerance
+            future_distances < self.avoid_goal_position_tolerance
         )  # (num_envs, num_goals)
         env_has_collision = collision_mask.any(dim=1)  # (num_envs,)
+        return env_has_collision
+
+    def _get_rewards(self) -> dict[str, torch.Tensor]:
+        goal_reached = self._position_error < self.position_tolerance
+        goal_reached_reward = self.goal_reached_bonus * torch.nan_to_num(
+            torch.where(
+                goal_reached,
+                1.0,
+                torch.zeros_like(self._position_error),
+            ),
+            posinf=0.0,
+            neginf=0.0,
+        )
 
         # Apply penalties for environments with collisions
+        env_has_collision = self._check_avoid_goal_collision()
+        avoid_penalty = torch.zeros(
+            (self.num_envs), device=self.device, dtype=torch.float32
+        )
         avoid_penalty[env_has_collision] = self.avoid_penalty_weight
         self._avoid_goal_hit_this_step[env_has_collision] = True
-
-        # Count collisions per environment (sum of collision_mask per env)
-        collisions_per_env = collision_mask.sum(dim=1)  # (num_envs,)
-        self._episode_avoid_collisions += collisions_per_env
+        self._episode_avoid_collisions += env_has_collision.int()
 
         self._target_index = self._target_index + goal_reached
         self._episode_waypoints_passed += goal_reached.int()
@@ -290,9 +295,9 @@ class SpotNavAvoidEnv(NavEnv):
             < self.episode_length_buf[goal_reached]
         ).all(), "Previous waypoint reached step is greater than episode length"
         # Compute k using torch.log
-        k = torch.log(torch.tensor(self.fast_goal_reached_bonus, device=self.device)) / (
-            self.max_episode_length - 1
-        )
+        k = torch.log(
+            torch.tensor(self.fast_goal_reached_bonus, device=self.device)
+        ) / (self.max_episode_length - 1)
         steps_taken = self.episode_length_buf - self._previous_waypoint_reached_step
         fast_goal_reached_reward = torch.where(
             goal_reached,
@@ -349,7 +354,7 @@ class SpotNavAvoidEnv(NavEnv):
             torch.where(
                 min_wall_dist > danger_distance,
                 torch.zeros_like(min_wall_dist),
-                -self.wall_penalty_weight
+                self.wall_penalty_weight
                 * torch.exp(
                     1.0 - min_wall_dist / danger_distance
                 ),  # Exponential penalty
@@ -579,7 +584,7 @@ class SpotNavAvoidEnv(NavEnv):
 
         # Generate waypoints with proper spacing
         waypoint_positions = self._generate_waypoints_with_spacing(
-            env_ids, robot_pose, min_spacing=3.0
+            env_ids, robot_pose, min_spacing=6.0
         )
         self._target_positions[env_ids] = waypoint_positions
 

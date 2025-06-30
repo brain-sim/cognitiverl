@@ -3,6 +3,7 @@ import os
 import sys
 import time
 from dataclasses import asdict
+from typing import List
 
 import gymnasium as gym
 import numpy as np
@@ -131,6 +132,9 @@ class ExperimentArgs:
     """the target KL divergence threshold"""
     lr_multiplier: float = 1.5
     """Factor to multiply/divide learning rate by"""
+
+    img_size: List[int] = [3, 32, 32]
+    """the size of the image"""
 
 
 @configclass
@@ -290,7 +294,10 @@ def main(args):
     )
 
     if args.agent_type == "CNNPPOAgent":
-        agent = CNNPPOAgent(n_obs, n_act).to(device)
+        print(envs.unwrapped.cfg.img_size)
+        agent = CNNPPOAgent(n_obs, n_act, img_size=envs.unwrapped.cfg.img_size).to(
+            device
+        )
     else:
         agent = MLPPPOAgent(n_obs, n_act).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
@@ -613,6 +620,18 @@ def main(args):
                 curriculum_info_buffer.clear()
                 termination_info_buffer.clear()
 
+                # # Check success rate and update avoid_penalty_weight if needed
+                # if logs.get("metrics/success_rate", 0) > 0.50 and hasattr(
+                #     envs.unwrapped, "avoid_penalty_weight"
+                # ):
+                #     envs.unwrapped.avoid_penalty_weight = (
+                #         envs.unwrapped.cfg.avoid_penalty_weight
+                #     )
+
+            desc = (
+                desc
+                + f"ep_ret={avg_returns:3.1f}, max_ep_ret={max_ep_ret:3.1f}, step_rew={step_reward:3.1f}, max_step_rew={max_step_reward:3.1f}"
+            )
             iteration_pbar.set_description(desc)
             wandb.log(
                 {

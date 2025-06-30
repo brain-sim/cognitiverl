@@ -544,8 +544,14 @@ class NavEnv(DirectRLEnv):
 
     def _get_dones(self) -> tuple[torch.Tensor, torch.Tensor, dict]:
         time_outs = self.episode_length_buf > self.max_episode_length_buf
-        self._vehicle_flipped = self._check_flipped()
-        terminated = self._vehicle_flipped
+        terminated = torch.zeros_like(time_outs)
+        if self.termination_on_vehicle_flip:
+            self._vehicle_flipped = self._check_flipped()
+            terminated = self._vehicle_flipped
+        if self.termination_on_goal_reached:
+            terminated |= self.task_completed
+
+
         termination_infos = {
             "Episode_Termination/flipped": self._vehicle_flipped.float().mean().item(),
             "Episode_Termination/time_outs": time_outs.float().mean().item(),
@@ -553,17 +559,21 @@ class NavEnv(DirectRLEnv):
             .mean()
             .item(),
         }
-
-        terminated |= self.task_completed
         # Add stuck termination
-        if hasattr(self, "_previous_waypoint_reached_step") and hasattr(
-            self, "_check_stuck_termination"
-        ):
+        if self.termination_on_goal_reached:
             stuck_termination = self._check_stuck_termination()
             time_outs |= stuck_termination
             termination_infos["Episode_Termination/stuck_termination"] = (
                 stuck_termination.float().mean().item()
             )
+
+        if self.termination_on_avoid_goal_collision:
+            avoid_goal_termination = self._check_avoid_goal_collision()
+            terminated |= avoid_goal_termination
+            termination_infos["Episode_Termination/avoid_goal_termination"] = (
+                avoid_goal_termination.float().mean().item()
+            )
+
         termination_infos["Episode_Termination/terminated"] = (
             terminated.float().mean().item()
         )

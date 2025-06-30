@@ -48,7 +48,7 @@ class EnvArgs:
     """run training in headless mode"""
     enable_cameras: bool = False
     """enable cameras to record sensor inputs."""
-    renderer: str = "PathTracing"  # "PathTracing" or "RayTraced"
+    renderer: str = "PathTracing"  # "PathTracing" or "RayTracedLighting"
     """Renderer to use."""
     samples_per_pixel_per_frame: int = 1
     """Number of samples per pixel per frame."""

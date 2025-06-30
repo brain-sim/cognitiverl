@@ -1,3 +1,5 @@
+from typing import List
+
 import torch
 import torch.nn as nn
 from torch.distributions.normal import Normal
@@ -14,6 +16,7 @@ class CNNPPOAgent(nn.Module):
         self,
         n_obs,
         n_act,
+        img_size: List[int] = [3, 32, 32],
         actor_hidden_dims=[512, 256, 128],
         critic_hidden_dims=[512, 256, 128],
         noise_std_type="scalar",
@@ -22,7 +25,7 @@ class CNNPPOAgent(nn.Module):
         super().__init__()
         self.noise_std_type = noise_std_type
         # Image input dimensions
-        channels, height, width = 3, 32, 32
+        channels, height, width = img_size
         self.img_size = (channels, height, width)
 
         # Load and adapt MobileNetV3-small backbone

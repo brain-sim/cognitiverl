@@ -73,7 +73,7 @@ class SpotNavRoughHeightEnv(NavEnv):
                 border_width=1.0,  # Safe border width (>0 to avoid division issues)
                 num_rows=2,  # Single terrain patch
                 num_cols=2,  # Single terrain patch
-                horizontal_scale=1.0,  # Safe horizontal resolution (>=1.0)
+                horizontal_scale=0.5,  # Safe horizontal resolution (>=1.0)
                 vertical_scale=0.05,  # Safe vertical resolution (>=0.1)
                 slope_threshold=1.0,  # Safe slope threshold (well above 0)
                 sub_terrains={
