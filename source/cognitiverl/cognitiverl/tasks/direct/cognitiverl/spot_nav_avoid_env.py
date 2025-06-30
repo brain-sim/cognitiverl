@@ -124,6 +124,9 @@ class SpotNavAvoidEnv(NavEnv):
         self.fast_goal_reached_bonus = self.cfg.fast_goal_reached_weight
         self.avoid_goal_position_tolerance = self.cfg.avoid_goal_position_tolerance
 
+        self.heading_coefficient = self.cfg.heading_coefficient
+        self.heading_progress_weight = self.cfg.heading_progress_weight
+
         self.termination_on_avoid_goal_collision = (
             self.cfg.termination_on_avoid_goal_collision
         )
@@ -219,14 +222,14 @@ class SpotNavAvoidEnv(NavEnv):
             dim=-1,
         )
 
-    # def _check_stuck_termination(self, max_steps: int = 300) -> torch.Tensor:
-    #     """Early termination if robot is stuck/wandering without progress"""
-    #     # If no goal reached in last max_steps and barely moving, terminate
-    #     steps_since_goal = (
-    #         self.episode_length_buf - self._previous_waypoint_reached_step
-    #     )
-    #     stuck_too_long = steps_since_goal > max_steps
-    #     return stuck_too_long
+    def _check_stuck_termination(self, max_steps: int = 300) -> torch.Tensor:
+        """Early termination if robot is stuck/wandering without progress"""
+        # If no goal reached in last max_steps and barely moving, terminate
+        steps_since_goal = (
+            self.episode_length_buf - self._previous_waypoint_reached_step
+        )
+        stuck_too_long = steps_since_goal > max_steps
+        return stuck_too_long
 
     def _check_avoid_goal_collision(self) -> torch.Tensor:
         """Check if the robot has collided with the avoid goal"""
@@ -267,6 +270,12 @@ class SpotNavAvoidEnv(NavEnv):
 
     def _get_rewards(self) -> dict[str, torch.Tensor]:
         goal_reached = self._position_error < self.position_tolerance
+        target_heading_rew = self.heading_progress_weight * torch.exp(
+            -torch.abs(self.target_heading_error) / self.heading_coefficient
+        )
+        target_heading_rew = torch.nan_to_num(
+            target_heading_rew, posinf=0.0, neginf=0.0
+        )
         goal_reached_reward = self.goal_reached_bonus * torch.nan_to_num(
             torch.where(
                 goal_reached,
@@ -400,9 +409,10 @@ class SpotNavAvoidEnv(NavEnv):
             "Episode_Reward/wall_penalty": wall_penalty,
             "Episode_Reward/fast_goal_reached_reward": fast_goal_reached_reward,
             "Episode_Reward/avoid_penalty": avoid_penalty,
+            "Episode_Reward/target_heading_rew": target_heading_rew,
         }
 
-    def _generate_waypoints_with_spacing(self, env_ids, robot_poses, min_spacing=3.0):
+    def _generate_waypoints_with_spacing(self, env_ids, robot_poses, min_spacing=6.0):
         """Generate waypoints ensuring minimum spacing between them and from robot spawn - VECTORIZED."""
         num_reset = len(env_ids)
         env_origins = self.scene.env_origins[env_ids, :2]  # (num_reset, 2)

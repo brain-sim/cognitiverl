@@ -90,7 +90,7 @@ class ExperimentArgs:
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 1.0e-5  # 0.0
+    ent_coef: float = 0.0  # 0.0
     """coefficient of the entropy"""
     vf_coef: float = 0.5  # 0.5
     """coefficient of the value function"""
@@ -294,7 +294,7 @@ def main(args):
     )
 
     if args.agent_type == "CNNPPOAgent":
-        print(envs.unwrapped.cfg.img_size)
+        print("img_size:", envs.unwrapped.cfg.img_size)
         agent = CNNPPOAgent(n_obs, n_act, img_size=envs.unwrapped.cfg.img_size).to(
             device
         )
@@ -323,7 +323,7 @@ def main(args):
             high=int(envs.unwrapped.max_episode_length),
         )
 
-    avg_returns = 0.0
+    avg_returns, ep_ret, max_ep_ret, max_step_reward = 0.0, 0.0, 0.0, 0.0
     # Create two static progress bars
     iteration_pbar = tqdm.tqdm(
         total=args.num_iterations, desc="Iterations", position=0, leave=True
@@ -615,6 +615,22 @@ def main(args):
                         .mean()
                         .item()
                     )
+                if metric_info_buffer.get("episode_reward", None):
+                    ep_ret = (
+                        torch.tensor(metric_info_buffer["episode_reward"]).mean().item()
+                    )
+                if metric_info_buffer.get("max_episode_return", None):
+                    max_ep_ret = (
+                        torch.tensor(metric_info_buffer["max_episode_return"])
+                        .mean()
+                        .item()
+                    )
+                if metric_info_buffer.get("max_step_reward", None):
+                    max_step_reward = (
+                        torch.tensor(metric_info_buffer["max_step_reward"])
+                        .mean()
+                        .item()
+                    )
                 reward_info_buffer.clear()
                 metric_info_buffer.clear()
                 curriculum_info_buffer.clear()
@@ -627,13 +643,10 @@ def main(args):
                 #     envs.unwrapped.avoid_penalty_weight = (
                 #         envs.unwrapped.cfg.avoid_penalty_weight
                 #     )
-            ep_ret = metric_info_buffer.get("episode_reward", 0)
-            max_ep_ret = metric_info_buffer.get("max_episode_return", 0)
-            max_step_reward = metric_info_buffer.get("max_step_reward", 0)
 
             desc = (
                 desc
-                + f"ep_ret={ep_ret:3.1f}, max_ep_ret={max_ep_ret:3.1f}, step_rew={avg_returns:3.1f}, max_step_rew={max_step_reward:3.1f}"
+                + f"ep_ret={ep_ret:3.1f}, max_ep_ret={max_ep_ret:3.1f}, step_rew={avg_returns:2.2f}, max_step_rew={max_step_reward:2.2f}"
             )
             iteration_pbar.set_description(desc)
             wandb.log(
@@ -672,7 +685,7 @@ def main(args):
                 best_step = global_step
                 best_ckpt = ckpt_path
 
-        avg_returns = 0.0
+        avg_returns, ep_ret, max_ep_ret, max_step_reward = 0.0, 0.0, 0.0, 0.0
         # Update iteration progress bar
         iteration_pbar.update(1)
 
@@ -704,3 +717,6 @@ if __name__ == "__main__":
         print("Exception:", e)
     finally:
         simulation_app.close()
+
+
+# python scripts/torchrl/ppo_continuous_action.py --enable_cameras --headless --task Spot-Nav-Avoid-v0 --num_envs 128 --total_timesteps 10_000_000 --log_interval 1 --checkpoint_interval 1_000  --log --ent_coef 0.000001

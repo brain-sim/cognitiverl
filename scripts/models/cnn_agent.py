@@ -123,3 +123,64 @@ class CNNPPOAgent(nn.Module):
 
     def forward(self, obs):
         return self.get_action(obs)
+
+    def load_from_checkpoint(self, checkpoint_path: str):
+        """
+        Load model weights from a checkpoint, handling only the first conv layer mismatch.
+
+        This function loads checkpoints from models trained on different image sizes
+        by skipping only the first convolution layer weights. All other layers must match exactly.
+
+        Args:
+            checkpoint_path (str): Path to the checkpoint file
+        """
+        # Load the checkpoint
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+
+        # Handle different checkpoint formats
+        if "model_state_dict" in checkpoint:
+            checkpoint_state_dict = checkpoint["model_state_dict"]
+        elif "state_dict" in checkpoint:
+            checkpoint_state_dict = checkpoint["state_dict"]
+        else:
+            checkpoint_state_dict = checkpoint
+
+        # Get current model state dict
+        current_state_dict = self.state_dict()
+
+        # Create new state dict, skipping only the first conv layer
+        new_state_dict = {}
+        first_conv_key = "backbone.0.0.weight"
+
+        for key, value in checkpoint_state_dict.items():
+            # Skip only the first conv layer weights
+            if key == first_conv_key:
+                print(f"Skipping first conv layer: {key}")
+                continue
+
+            # All other layers must match exactly
+            if key not in current_state_dict:
+                raise KeyError(f"Key {key} from checkpoint not found in current model")
+
+            if current_state_dict[key].shape != value.shape:
+                raise ValueError(
+                    f"Shape mismatch for {key}: "
+                    f"checkpoint {value.shape} vs model {current_state_dict[key].shape}"
+                )
+
+            new_state_dict[key] = value
+
+        # Verify all current model keys (except first conv) are present in checkpoint
+        for key in current_state_dict.keys():
+            if key == first_conv_key:
+                continue
+            if key not in checkpoint_state_dict:
+                raise KeyError(f"Key {key} from current model not found in checkpoint")
+
+        # Load the weights (strict=False only because we're skipping first conv layer)
+        self.load_state_dict(new_state_dict, strict=False)
+
+        print(f"Successfully loaded checkpoint from {checkpoint_path}")
+        print(f"Loaded {len(new_state_dict)} layers (skipped first conv layer)")
+
+        return True

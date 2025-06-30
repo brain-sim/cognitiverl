@@ -551,7 +551,6 @@ class NavEnv(DirectRLEnv):
         if self.termination_on_goal_reached:
             terminated |= self.task_completed
 
-
         termination_infos = {
             "Episode_Termination/flipped": self._vehicle_flipped.float().mean().item(),
             "Episode_Termination/time_outs": time_outs.float().mean().item(),
@@ -560,7 +559,7 @@ class NavEnv(DirectRLEnv):
             .item(),
         }
         # Add stuck termination
-        if self.termination_on_goal_reached:
+        if self.termination_on_stuck:
             stuck_termination = self._check_stuck_termination()
             time_outs |= stuck_termination
             termination_infos["Episode_Termination/stuck_termination"] = (
