@@ -124,24 +124,22 @@ class CNNPPOAgent(nn.Module):
     def forward(self, obs):
         return self.get_action(obs)
 
-    def load_from_checkpoint(self, checkpoint_path: str):
+    def load_from_checkpoint(self, checkpoint_path: str, load_ema: bool = False):
         """
         Load model weights from a checkpoint, handling layers that change with image size.
-        
-        This function loads checkpoints from models trained on different image sizes
-        by skipping layers that depend on the backbone feature size:
-        - First conv layer (backbone.0.0.weight)
-        - First actor layer (actor.0.weight, actor.0.bias)
-        - First critic layer (critic.0.weight, critic.0.bias)
-        
+
         Args:
             checkpoint_path (str): Path to the checkpoint file
+            load_ema (bool): Whether to load EMA weights instead of regular weights
         """
         # Load the checkpoint
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
 
         # Handle different checkpoint formats
-        if "model_state_dict" in checkpoint:
+        if load_ema and "ema_model_state_dict" in checkpoint:
+            checkpoint_state_dict = checkpoint["ema_model_state_dict"]
+            print("Loading EMA weights from checkpoint")
+        elif "model_state_dict" in checkpoint:
             checkpoint_state_dict = checkpoint["model_state_dict"]
         elif "state_dict" in checkpoint:
             checkpoint_state_dict = checkpoint["state_dict"]
@@ -153,11 +151,11 @@ class CNNPPOAgent(nn.Module):
 
         # Define layers to skip (these depend on image size)
         skip_keys = {
-            "backbone.0.0.weight",      # First conv layer
-            "actor.0.weight",           # First actor layer
-            "actor.0.bias",             # First actor layer bias
-            "critic.0.weight",          # First critic layer
-            "critic.0.bias"             # First critic layer bias
+            "backbone.0.0.weight",  # First conv layer
+            "actor.0.weight",  # First actor layer
+            "actor.0.bias",  # First actor layer bias
+            "critic.0.weight",  # First critic layer
+            "critic.0.bias",  # First critic layer bias
         }
 
         # Create new state dict, skipping size-dependent layers

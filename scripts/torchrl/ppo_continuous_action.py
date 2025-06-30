@@ -99,6 +99,16 @@ class ExperimentArgs:
     init_at_random_ep_len: bool = False
     """randomize initial episode lengths (for exploration)"""
 
+    # EMA parameters
+    use_ema: bool = True
+    """Enable Exponential Moving Average for model weights"""
+    ema_decay: float = 0.999
+    """EMA decay rate for model weights"""
+    ema_start_step: int = 1000
+    """Start applying EMA after this many global steps"""
+    use_ema_for_eval: bool = True
+    """Use EMA weights for evaluation and checkpointing"""
+
     # to be filled in runtime
     batch_size: int = 0
     """the batch size (computed in runtime)"""
@@ -241,6 +251,27 @@ def make_isaaclab_env(
     return thunk
 
 
+# Add EMA helper functions after imports
+import copy
+
+
+def create_ema_agent(agent):
+    """Create EMA copy of the agent"""
+    ema_agent = copy.deepcopy(agent)
+    ema_agent.eval()  # Set to eval mode
+    # Disable gradients for EMA agent
+    for param in ema_agent.parameters():
+        param.requires_grad = False
+    return ema_agent
+
+
+def update_ema_weights(ema_agent, agent, decay):
+    """Update EMA weights"""
+    with torch.no_grad():
+        for ema_param, param in zip(ema_agent.parameters(), agent.parameters()):
+            ema_param.data.mul_(decay).add_(param.data, alpha=1 - decay)
+
+
 def main(args):
     print_dict(colored(args, "green", attrs=["bold"]), nesting=4)
     run_name = f"{args.task}__{args.exp_name}__{args.seed}"
@@ -320,6 +351,19 @@ def main(args):
                 )
             )
         agent.to(device)
+
+    # Create EMA agent if enabled
+    ema_agent = None
+    if args.use_ema:
+        ema_agent = create_ema_agent(agent)
+        print(
+            colored(
+                f"✓ EMA agent created with decay={args.ema_decay}",
+                "green",
+                attrs=["bold"],
+            )
+        )
+
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
     # ALGO Logic: Storage setup
@@ -378,6 +422,15 @@ def main(args):
 
         # Reset step progress bar for each iteration
         step_pbar.reset()
+        inference_agent = (
+            ema_agent
+            if (
+                args.use_ema
+                and ema_agent is not None
+                and global_step >= args.ema_start_step
+            )
+            else agent
+        )
 
         with torch.inference_mode():
             start_time = time.time()
@@ -386,8 +439,8 @@ def main(args):
                 obs[step] = next_obs
 
                 # ALGO LOGIC: action logic
-                action, logprob, _, value, mu, sigma = agent.get_action_and_value(
-                    next_obs
+                action, logprob, _, value, mu, sigma = (
+                    inference_agent.get_action_and_value(next_obs)
                 )
                 values[step] = value.flatten()
                 actions[step] = action
@@ -460,7 +513,7 @@ def main(args):
             step_pbar.set_description(f"speed (sps) : {step_speed:3.1f}")
 
             # bootstrap value if not done
-            next_value = agent.get_value(next_obs).reshape(1, -1)
+            next_value = inference_agent.get_value(next_obs).reshape(1, -1)
             returns = torch.zeros_like(rewards).to(device)
 
             advantage = 0
@@ -568,6 +621,14 @@ def main(args):
                     min_lr=1e-7,
                     max_lr=1e-3,
                 )
+
+            # Update EMA weights after all update epochs
+            if (
+                args.use_ema
+                and ema_agent is not None
+                and global_step >= args.ema_start_step
+            ):
+                update_ema_weights(ema_agent, agent, args.ema_decay)
 
         # Log the learning rate change
         if global_step_burnin is not None and iteration % args.log_interval == 0:
@@ -695,8 +756,34 @@ def main(args):
                 )
         # save every checkpoint_interval steps
         if global_step_burnin is not None and iteration % args.checkpoint_interval == 0:
+            # Choose which agent to save based on configuration
+            agent_to_save = (
+                ema_agent
+                if (args.use_ema and args.use_ema_for_eval and ema_agent is not None)
+                else agent
+            )
+
             ckpt_path = os.path.join(ckpt_dir, f"ckpt_{global_step}.pt")
-            torch.save(agent.state_dict(), ckpt_path)
+
+            # Save both regular and EMA weights if EMA is enabled
+            if args.use_ema and ema_agent is not None:
+                checkpoint_data = {
+                    "model_state_dict": agent.state_dict(),
+                    "ema_model_state_dict": ema_agent.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "global_step": global_step,
+                    "iteration": iteration,
+                    "args": vars(args),
+                }
+            else:
+                checkpoint_data = {
+                    "model_state_dict": agent.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "global_step": global_step,
+                    "iteration": iteration,
+                    "args": vars(args),
+                }
+            torch.save(checkpoint_data, ckpt_path)
 
             mean_return = float(avg_returns)
 
