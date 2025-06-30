@@ -126,11 +126,14 @@ class CNNPPOAgent(nn.Module):
 
     def load_from_checkpoint(self, checkpoint_path: str):
         """
-        Load model weights from a checkpoint, handling only the first conv layer mismatch.
-
+        Load model weights from a checkpoint, handling layers that change with image size.
+        
         This function loads checkpoints from models trained on different image sizes
-        by skipping only the first convolution layer weights. All other layers must match exactly.
-
+        by skipping layers that depend on the backbone feature size:
+        - First conv layer (backbone.0.0.weight)
+        - First actor layer (actor.0.weight, actor.0.bias)
+        - First critic layer (critic.0.weight, critic.0.bias)
+        
         Args:
             checkpoint_path (str): Path to the checkpoint file
         """
@@ -148,14 +151,24 @@ class CNNPPOAgent(nn.Module):
         # Get current model state dict
         current_state_dict = self.state_dict()
 
-        # Create new state dict, skipping only the first conv layer
+        # Define layers to skip (these depend on image size)
+        skip_keys = {
+            "backbone.0.0.weight",      # First conv layer
+            "actor.0.weight",           # First actor layer
+            "actor.0.bias",             # First actor layer bias
+            "critic.0.weight",          # First critic layer
+            "critic.0.bias"             # First critic layer bias
+        }
+
+        # Create new state dict, skipping size-dependent layers
         new_state_dict = {}
-        first_conv_key = "backbone.0.0.weight"
+        skipped_layers = []
 
         for key, value in checkpoint_state_dict.items():
-            # Skip only the first conv layer weights
-            if key == first_conv_key:
-                print(f"Skipping first conv layer: {key}")
+            # Skip layers that depend on image size
+            if key in skip_keys:
+                skipped_layers.append(key)
+                print(f"Skipping size-dependent layer: {key}")
                 continue
 
             # All other layers must match exactly
@@ -170,17 +183,18 @@ class CNNPPOAgent(nn.Module):
 
             new_state_dict[key] = value
 
-        # Verify all current model keys (except first conv) are present in checkpoint
+        # Verify all current model keys (except skipped ones) are present in checkpoint
         for key in current_state_dict.keys():
-            if key == first_conv_key:
+            if key in skip_keys:
                 continue
             if key not in checkpoint_state_dict:
                 raise KeyError(f"Key {key} from current model not found in checkpoint")
 
-        # Load the weights (strict=False only because we're skipping first conv layer)
+        # Load the weights (strict=False because we're skipping some layers)
         self.load_state_dict(new_state_dict, strict=False)
 
         print(f"Successfully loaded checkpoint from {checkpoint_path}")
-        print(f"Loaded {len(new_state_dict)} layers (skipped first conv layer)")
+        print(f"Loaded {len(new_state_dict)} layers")
+        print(f"Skipped {len(skipped_layers)} size-dependent layers: {skipped_layers}")
 
         return True

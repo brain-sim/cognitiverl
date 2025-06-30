@@ -48,7 +48,7 @@ class SpotNavAvoidEnvCfg(NavEnvCfg):
     # Goal waypoints configuration
     waypoint_cfg = WAYPOINT_CFG
     position_tolerance = waypoint_cfg.markers["marker1"].radius
-    avoid_goal_position_tolerance = waypoint_cfg.markers["marker0"].radius + 0.5
+    avoid_goal_position_tolerance = waypoint_cfg.markers["marker0"].radius + 0.25
 
     # Reward Coefficients
     goal_reached_bonus = 125.0
@@ -58,8 +58,7 @@ class SpotNavAvoidEnvCfg(NavEnvCfg):
     avoid_penalty_weight = -10.0  # 0.0
     fast_goal_reached_weight = 125.0
     heading_coefficient = 0.25
-    heading_progress_weight = 0.0
-    # angular_speed_weight = 0.1  # 0.05
+    heading_progress_weight = 0.0  # 0.05
     # flip_penalty_weight = 100.0
 
     # Laziness
