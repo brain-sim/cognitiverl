@@ -52,10 +52,10 @@ class SpotNavAvoidEnvCfg(NavEnvCfg):
 
     # Reward Coefficients
     goal_reached_bonus = 125.0
-    wall_penalty_weight = -5.0  # -0.2
+    wall_penalty_weight = -2.0  # -0.2
     linear_speed_weight = 0.0  # 0.05
     laziness_penalty_weight = 0.0  # -0.3
-    avoid_penalty_weight = -5.0  # 0.0
+    avoid_penalty_weight = -2.0  # 0.0
     fast_goal_reached_weight = 125.0
     # angular_speed_weight = 0.1  # 0.05
     # flip_penalty_weight = 100.0

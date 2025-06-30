@@ -90,7 +90,7 @@ class ExperimentArgs:
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 0.0  # 0.0
+    ent_coef: float = 1.0e-5  # 0.0
     """coefficient of the entropy"""
     vf_coef: float = 0.5  # 0.5
     """coefficient of the value function"""
@@ -627,10 +627,13 @@ def main(args):
                 #     envs.unwrapped.avoid_penalty_weight = (
                 #         envs.unwrapped.cfg.avoid_penalty_weight
                 #     )
+            ep_ret = metric_info_buffer.get("episode_reward", 0)
+            max_ep_ret = metric_info_buffer.get("max_episode_return", 0)
+            max_step_reward = metric_info_buffer.get("max_step_reward", 0)
 
             desc = (
                 desc
-                + f"ep_ret={avg_returns:3.1f}, max_ep_ret={max_ep_ret:3.1f}, step_rew={step_reward:3.1f}, max_step_rew={max_step_reward:3.1f}"
+                + f"ep_ret={ep_ret:3.1f}, max_ep_ret={max_ep_ret:3.1f}, step_rew={avg_returns:3.1f}, max_step_rew={max_step_reward:3.1f}"
             )
             iteration_pbar.set_description(desc)
             wandb.log(
