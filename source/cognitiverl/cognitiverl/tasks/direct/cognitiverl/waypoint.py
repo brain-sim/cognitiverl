@@ -9,7 +9,7 @@ WAYPOINT_CFG = VisualizationMarkersCfg(
     prim_path="/World/Visuals/Cones",
     markers={
         "marker0": sim_utils.SphereCfg(  # future waypoint (yellow)
-            radius=0.5,
+            radius=1.0,
             visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(1.0, 1.0, 0.0)),
         ),
         "marker1": sim_utils.SphereCfg(  # current goal (green)

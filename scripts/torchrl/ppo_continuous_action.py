@@ -48,10 +48,10 @@ class EnvArgs:
     enable_cameras: bool = False
     """enable cameras to record sensor inputs."""
 
-    renderer: str = "PathTracing"
-    """Renderer to use."""
-    samples_per_pixel_per_frame: int = 1
-    """Number of samples per pixel per frame."""
+    # renderer: str = "PathTracing"
+    # """Renderer to use."""
+    # samples_per_pixel_per_frame: int = 1
+    # """Number of samples per pixel per frame."""
 
 
 @configclass
@@ -102,9 +102,9 @@ class ExperimentArgs:
     # EMA parameters
     use_ema: bool = True
     """Enable Exponential Moving Average for model weights"""
-    ema_decay: float = 0.999
+    ema_decay: float = 0.95
     """EMA decay rate for model weights"""
-    ema_start_step: int = 1000
+    ema_start_step: int = 10_000
     """Start applying EMA after this many global steps"""
     use_ema_for_eval: bool = True
     """Use EMA weights for evaluation and checkpointing"""
@@ -358,7 +358,7 @@ def main(args):
         ema_agent = create_ema_agent(agent)
         print(
             colored(
-                f"✓ EMA agent created with decay={args.ema_decay}",
+                f"EMA agent created with decay={args.ema_decay}",
                 "green",
                 attrs=["bold"],
             )

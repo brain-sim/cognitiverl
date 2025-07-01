@@ -4,6 +4,7 @@ import sys
 from dataclasses import asdict
 
 import gymnasium as gym
+import imageio  # Added for video writing
 import numpy as np
 import torch
 import tqdm
@@ -63,11 +64,11 @@ class ExperimentArgs:
     device: str = "cuda:0"
     """device to use for training"""
 
-    checkpoint_path: str = "/home/user/cognitiverl/wandb/offline-run-20250602_194417-pnrq9ikt/files/checkpoints/ckpt_20480.pt"
+    checkpoint_path: str = "/home/user/cognitiverl/wandb/spot_nav_avoid_ckpt_2457600.pt"
     """path to the checkpoint to load"""
-    num_eval_envs: int = 10
+    num_eval_envs: int = 32
     """number of environments to run for evaluation/play."""
-    num_eval_env_steps: int = 50
+    num_eval_env_steps: int = 1000
     """number of steps to run for evaluation/play."""
     agent: str = "CNNPPOAgent"
 
@@ -163,6 +164,10 @@ def main(args):
         log_dir=run_dir,
     )()
 
+    # Set camera eye position to (0, 0, 45) looking at origin
+    print("📷 Setting camera eye position to (0, 0, 45)")
+    eval_envs.unwrapped.sim.set_camera_view(eye=[0, 0, 45], target=[0.0, 0.0, 0.0])
+
     n_obs = int(np.prod(eval_envs.observation_space.shape[1:]))
     n_act = int(np.prod(eval_envs.action_space.shape[1:]))
     assert isinstance(eval_envs.action_space, gym.spaces.Box), (
@@ -174,7 +179,7 @@ def main(args):
     }
 
     agent_class = AGENT_LOOKUP[args.agent]
-    agent = agent_class(n_obs, n_act)
+    agent = agent_class(n_obs, n_act, img_size=eval_envs.unwrapped.cfg.img_size)
     print(
         colored(
             "[INFO] : Loading agent from {args.checkpoint_path}",
@@ -182,7 +187,11 @@ def main(args):
             attrs=["bold"],
         )
     )
-    agent.load_state_dict(torch.load(args.checkpoint_path))
+    checkpoint = torch.load(
+        args.checkpoint_path, map_location="cpu", weights_only=False
+    )
+    print(checkpoint.keys())
+    agent.load_state_dict(checkpoint["ema_model_state_dict"])
     device = (
         torch.device(args.device) if torch.cuda.is_available() else torch.device("cpu")
     )
@@ -197,32 +206,74 @@ def main(args):
         obs, _ = eval_envs.reset()
         step, global_step = 0, 0
         done = torch.zeros(args.num_eval_envs, dtype=torch.bool)
+
+        # Initialize storage for observations
+        obs_history = []
+
+        # Create video directory
+        video_dir = os.path.join(run_dir, "videos", "play")
+        os.makedirs(video_dir, exist_ok=True)
+
         pbar = tqdm.tqdm(total=args.num_eval_env_steps)
         while step < args.num_eval_env_steps and not done.all():
+            # Store current observations
+            obs_history.append(obs.clone().cpu().numpy())
+
             action = play_agent.get_action(obs)
             obs, _, done, _ = eval_envs.step(action)
             step += 1
             global_step += args.num_eval_envs
             pbar.update(1)
             pbar.set_description(f"step: {step}")
+
+        # Save final observation
+        obs_history.append(obs.clone().cpu().numpy())
+
+        # Convert observations to videos for each environment
+        obs_array = np.array(obs_history)  # Shape: (steps, n_envs, obs_dim)
+        print(obs_array.shape)
+
+        # Create videos for each environment
+        for env_idx in range(args.num_eval_envs):
+            # Extract observations for this environment
+            env_obs = obs_array[:, env_idx, : 3 * 128 * 128]  # Take RGB channels
+
+            print(env_obs.shape)
+            # Reshape to (steps, height, width, channels)
+            env_frames = env_obs.reshape(-1, 3, 128, 128).transpose(0, 2, 3, 1)
+
+            # Convert from float [0,1] to uint8 [0,255] if needed
+            if env_frames.max() <= 1.0:
+                env_frames = (env_frames * 255).astype(np.uint8)
+            else:
+                env_frames = env_frames.astype(np.uint8)
+
+            # No need to convert RGB to BGR for imageio (keep RGB format)
+
+            # Create video using imageio
+            video_path = os.path.join(video_dir, f"env_{env_idx}_fpp.mp4")
+
+            # Save video with imageio
+            imageio.mimwrite(video_path, env_frames, fps=60, quality=8)
+
+            print(f"Saved video for environment {env_idx}: {video_path}")
+
         eval_envs.close()
 
+        # Log videos to wandb if capture_video is enabled
         if args.capture_video:
-            wandb.log(
-                {
-                    f"{mode}/video_episode": wandb.Video(
-                        os.path.join(
-                            run_dir,
-                            "videos",
-                            "play",
-                            f"{eval_envs.video_name}.mp4",
-                        ),
-                        format="mp4",
-                        fps=30,
-                    )
-                },
-                step=global_step,
-            )
+            for env_idx in range(args.num_eval_envs):
+                video_path = os.path.join(video_dir, f"env_{env_idx}_fpp.mp4")
+                wandb.log(
+                    {
+                        f"{mode}/env_{env_idx}_video": wandb.Video(
+                            video_path,
+                            format="mp4",
+                            fps=60,
+                        )
+                    },
+                    step=global_step,
+                )
 
     run_play(agent)
     wandb.finish()
@@ -230,6 +281,7 @@ def main(args):
 
 if __name__ == "__main__":
     try:
+        os.environ["WANDB_MODE"] = "dryrun"
         main(args)
     except Exception as e:
         print("Exception:", e)
