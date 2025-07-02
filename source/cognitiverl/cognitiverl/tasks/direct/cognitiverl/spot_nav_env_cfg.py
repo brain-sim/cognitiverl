@@ -21,8 +21,8 @@ class SpotNavEnvCfg(NavEnvCfg):
     img_size = [3, 128, 128]
     observation_space = (
         img_size[0] * img_size[1] * img_size[2] + 4
-    )  # Changed from 8 to 9 to include minimum wall distance
-    policy_file_path = "spot_policy_custom_rslrl.pt"
+    )  # Look at _get_state_obs() in the *_env.py file
+    policy_file_path = "spot_policy_test_v1.pt"
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 200, render_interval=render_interval
     )  # dt=1/250
