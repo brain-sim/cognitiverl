@@ -102,3 +102,72 @@ if args.target_kl is not None and args.adaptive_lr:
 ```
 
 **Key Point**: The `max_lr` is set to 1e-3 to prevent policy unlearning, which is crucial for stable PPO training.
+
+## EMA Agent Implementation
+
+EMA (Exponential Moving Average) agent provides smoother learning by maintaining a moving average of model weights for inference, while the original agent continues training.
+
+### EMA Configuration
+
+```python
+@configclass
+class ExperimentArgs:
+    # EMA parameters
+    use_ema: bool = False
+    """Enable Exponential Moving Average for model weights"""
+    ema_decay: float = 0.95
+    """EMA decay rate for model weights"""
+    ema_start_step: int = 10_000
+    """Start applying EMA after this many global steps"""
+    use_ema_for_eval: bool = True
+    """Use EMA weights for evaluation and checkpointing"""
+```
+
+### EMA Helper Functions
+
+```python
+import copy
+
+def create_ema_agent(agent):
+    """Create EMA copy of the agent"""
+    ema_agent = copy.deepcopy(agent)
+    ema_agent.eval()  # Set to eval mode
+    # Disable gradients for EMA agent
+    for param in ema_agent.parameters():
+        param.requires_grad = False
+    return ema_agent
+
+def update_ema_weights(ema_agent, agent, decay):
+    """Update EMA weights"""
+    with torch.no_grad():
+        for ema_param, param in zip(ema_agent.parameters(), agent.parameters()):
+            ema_param.data.mul_(decay).add_(param.data, alpha=1 - decay)
+```
+
+### Usage in Training Loop
+
+```python
+# Create EMA agent
+ema_agent = None
+if args.use_ema:
+    ema_agent = create_ema_agent(agent)
+
+# Select inference agent (EMA or regular)
+inference_agent = (
+    ema_agent
+    if (args.use_ema and ema_agent is not None and global_step >= args.ema_start_step)
+    else agent
+)
+
+# Use inference agent for rollouts
+with torch.inference_mode():
+    for step in range(0, args.num_steps):
+        action, logprob, _, value, mu, sigma = inference_agent.get_action_and_value(next_obs)
+        # ... rest of rollout logic
+
+# Update EMA weights after training updates
+if args.use_ema and ema_agent is not None and global_step >= args.ema_start_step:
+    update_ema_weights(ema_agent, agent, args.ema_decay)
+```
+
+**Key Benefits**: EMA agent provides more stable inference during training, leading to smoother learning curves and better sample efficiency. The EMA agent is used for rollouts while the original agent continues to be updated via gradient descent.
