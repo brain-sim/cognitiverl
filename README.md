@@ -83,12 +83,12 @@ python scripts/list_envs.py
 python scripts/torchrl/train.py --task=Spot-Nav-v0
 ```
 
-# Train with RSL-RL (Optional)
+### Train with RSL-RL (Optional)
 ```bash
 python scripts/rsl_rl/train.py --task=Spot-Nav-v0
 ```
 
-# Play with the trained policy
+### Play with the trained policy
 ```bash
 python scripts/torchrl/play.py --task=Spot-Nav-v0 --checkpoint_path=<PATH_TO_CHECKPOINT>
 ```
