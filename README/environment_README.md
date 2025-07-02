@@ -19,11 +19,11 @@ source $HOME/isaaclab_env/bin/activate
 
 4. Install the packages using the requirements.txt file.
 ```bash
-uv install -r requirements.txt
+uv pip install -r requirements.txt
 ```
 or If you are running on the server machine, you can use the requirements_machine.txt file to install the packages.
 ```bash
-uv install -r requirements_machine.txt
+uv pip install -r requirements_machine.txt
 ```
 
 5. Test if both jax and pytorch are installed correctly using the following command:
