@@ -280,6 +280,9 @@ def main(args):
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
 
+    # Set environment variable to ignore checkpoint files from being uploaded
+    os.environ["WANDB_IGNORE_GLOBS"] = "checkpoints/*,*.pt"
+
     # initialize wandb run
     run = wandb.init(
         project=args.wandb_project if args.wandb_project else "ppo_continuous_action",
@@ -292,6 +295,14 @@ def main(args):
     run_dir = run.dir
     ckpt_dir = os.path.join(run_dir, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
+
+    print(
+        colored(
+            "Checkpoints will be saved locally but not uploaded to cloud",
+            "yellow",
+            attrs=["bold"],
+        )
+    )
 
     # tracking best model
     best_return = -float("inf")
