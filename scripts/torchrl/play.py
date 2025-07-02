@@ -49,10 +49,10 @@ class EnvArgs:
     """run training in headless mode"""
     enable_cameras: bool = False
     """enable cameras to record sensor inputs."""
-    renderer: str = "PathTracing"  # "PathTracing" or "RayTracedLighting"
-    """Renderer to use."""
-    samples_per_pixel_per_frame: int = 1
-    """Number of samples per pixel per frame."""
+    # renderer: str = "PathTracing"  # "PathTracing" or "RayTracedLighting"
+    # """Renderer to use."""
+    # samples_per_pixel_per_frame: int = 1
+    # """Number of samples per pixel per frame."""
 
 
 @configclass
@@ -64,7 +64,7 @@ class ExperimentArgs:
     device: str = "cuda:0"
     """device to use for training"""
 
-    checkpoint_path: str = "/home/user/cognitiverl/wandb/spot_nav_avoid_ckpt_2457600.pt"
+    checkpoint_path: str = "/home/user/cognitiverl/wandb/run-20250701_001447-0ldtuxzk/files/checkpoints/ckpt_4915200.pt"
     """path to the checkpoint to load"""
     num_eval_envs: int = 32
     """number of environments to run for evaluation/play."""
@@ -166,7 +166,7 @@ def main(args):
 
     # Set camera eye position to (0, 0, 45) looking at origin
     print("📷 Setting camera eye position to (0, 0, 45)")
-    eval_envs.unwrapped.sim.set_camera_view(eye=[0, 0, 45], target=[0.0, 0.0, 0.0])
+    eval_envs.unwrapped.sim.set_camera_view(eye=[0, 0, 60], target=[0.0, 0.0, 0.0])
 
     n_obs = int(np.prod(eval_envs.observation_space.shape[1:]))
     n_act = int(np.prod(eval_envs.action_space.shape[1:]))
@@ -190,7 +190,6 @@ def main(args):
     checkpoint = torch.load(
         args.checkpoint_path, map_location="cpu", weights_only=False
     )
-    print(checkpoint.keys())
     agent.load_state_dict(checkpoint["ema_model_state_dict"])
     device = (
         torch.device(args.device) if torch.cuda.is_available() else torch.device("cpu")
@@ -214,6 +213,8 @@ def main(args):
         video_dir = os.path.join(run_dir, "videos", "play")
         os.makedirs(video_dir, exist_ok=True)
 
+        img_size = eval_envs.unwrapped.cfg.img_size
+
         pbar = tqdm.tqdm(total=args.num_eval_env_steps)
         while step < args.num_eval_env_steps and not done.all():
             # Store current observations
@@ -231,16 +232,17 @@ def main(args):
 
         # Convert observations to videos for each environment
         obs_array = np.array(obs_history)  # Shape: (steps, n_envs, obs_dim)
-        print(obs_array.shape)
 
         # Create videos for each environment
         for env_idx in range(args.num_eval_envs):
             # Extract observations for this environment
-            env_obs = obs_array[:, env_idx, : 3 * 128 * 128]  # Take RGB channels
-
-            print(env_obs.shape)
+            env_obs = obs_array[
+                :, env_idx, : img_size[0] * img_size[1] * img_size[2]
+            ]  # Take RGB channels
             # Reshape to (steps, height, width, channels)
-            env_frames = env_obs.reshape(-1, 3, 128, 128).transpose(0, 2, 3, 1)
+            env_frames = env_obs.reshape(
+                -1, img_size[0], img_size[1], img_size[2]
+            ).transpose(0, 2, 3, 1)
 
             # Convert from float [0,1] to uint8 [0,255] if needed
             if env_frames.max() <= 1.0:
@@ -254,7 +256,7 @@ def main(args):
             video_path = os.path.join(video_dir, f"env_{env_idx}_fpp.mp4")
 
             # Save video with imageio
-            imageio.mimwrite(video_path, env_frames, fps=60, quality=8)
+            imageio.mimwrite(video_path, env_frames, fps=30, quality=8)
 
             print(f"Saved video for environment {env_idx}: {video_path}")
 
@@ -269,7 +271,7 @@ def main(args):
                         f"{mode}/env_{env_idx}_video": wandb.Video(
                             video_path,
                             format="mp4",
-                            fps=60,
+                            fps=30,
                         )
                     },
                     step=global_step,

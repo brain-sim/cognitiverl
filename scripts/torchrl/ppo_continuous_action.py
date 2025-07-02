@@ -100,7 +100,7 @@ class ExperimentArgs:
     """randomize initial episode lengths (for exploration)"""
 
     # EMA parameters
-    use_ema: bool = True
+    use_ema: bool = False
     """Enable Exponential Moving Average for model weights"""
     ema_decay: float = 0.95
     """EMA decay rate for model weights"""

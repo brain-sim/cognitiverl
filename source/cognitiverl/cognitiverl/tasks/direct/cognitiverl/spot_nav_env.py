@@ -110,6 +110,9 @@ class SpotNavEnv(NavEnv):
             (self.num_envs,), self.max_episode_length, device=self.device
         )
 
+        self.termination_on_goal_reached = self.cfg.termination_on_goal_reached
+        self.termination_on_vehicle_flip = self.cfg.termination_on_vehicle_flip
+
     def _setup_camera(self):
         camera_prim_path = "/World/envs/env_.*/Robot/body/Camera"
         pinhole_cfg = PinholeCameraCfg(
@@ -123,8 +126,8 @@ class SpotNavEnv(NavEnv):
         camera_cfg = TiledCameraCfg(
             prim_path=camera_prim_path,
             update_period=self.step_dt,
-            height=32,
-            width=32,
+            height=self.cfg.img_size[1],
+            width=self.cfg.img_size[2],
             data_types=["rgb"],
             spawn=pinhole_cfg,
             offset=TiledCameraCfg.OffsetCfg(

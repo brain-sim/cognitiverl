@@ -18,7 +18,10 @@ class SpotNavEnvCfg(NavEnvCfg):
     render_interval = 16
     episode_length_s = 60.0
     action_space = 3
-    observation_space = 3076  # Changed from 8 to 9 to include minimum wall distance
+    img_size = [3, 128, 128]
+    observation_space = (
+        img_size[0] * img_size[1] * img_size[2] + 4
+    )  # Changed from 8 to 9 to include minimum wall distance
     policy_file_path = "spot_policy_custom_rslrl.pt"
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 200, render_interval=render_interval

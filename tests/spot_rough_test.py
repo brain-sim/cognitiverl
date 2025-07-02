@@ -18,7 +18,6 @@ This script demonstrates different legged robots.
 
 import argparse
 import sys
-import time
 
 import gymnasium as gym
 import torch

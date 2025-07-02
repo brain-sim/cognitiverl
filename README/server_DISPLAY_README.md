@@ -25,34 +25,6 @@ Setting up  TurboVNC viewer on the server machine to forward the display to the 
 
 Setting up  VirtualGL on the server machine to enable OpenGL rendering (GPU acceleration) for TurboVNC.
 
-# Install VirtualGL
-1. Download the VirtualGL package from the official website: [VirtualGL Download](https://www.virtualgl.org/)
-2. As root run the following command to install the downloaded package:
-   ```bash
-   sudo sh -c "wget -q -O- https://packagecloud.io/dcommander/virtualgl/gpgkey | gpg --dearmor >/etc/apt/trusted.gpg.d/VirtualGL.gpg"
-   ```
-3. Add VirtualGL list to the system:
-    ```bash
-    wget https://raw.githubusercontent.com/VirtualGL/repo/main/VirtualGL.list -O /etc/apt/sources.list.d/VirtualGL.list
-    ```
-
-4. Update the package list:
-    ```bash
-    sudo apt update
-    ```
-5. Install VirtualGL:
-    ```bash
-    sudo apt install virtualgl
-    ```
-
-# Configure VirtualGL
-1. Run the following command to configure VirtualGL:
-   ```bash
-   sudo /opt/VirtualGL/bin/vglserver_config
-   ```
-   This command will prompt you to configure VirtualGL. Follow the instructions to set up VirtualGL for your system.
-   Choose option 1 to configure VirtualGL to use both EGL and GLX. This will allow you to use OpenGL rendering with TurboVNC.
-
 
 # Start TurboVNC server
 1. Setup the VNC server to use the desired window manager. Open the VNC server configuration file (if it doesn't exist, create it):
@@ -108,3 +80,32 @@ Setting up  VirtualGL on the server machine to enable OpenGL rendering (GPU acce
 
 
 
+----- No need to install VirtualGL for now -----
+
+# Install VirtualGL
+1. Download the VirtualGL package from the official website: [VirtualGL Download](https://www.virtualgl.org/)
+2. As root run the following command to install the downloaded package:
+   ```bash
+   sudo sh -c "wget -q -O- https://packagecloud.io/dcommander/virtualgl/gpgkey | gpg --dearmor >/etc/apt/trusted.gpg.d/VirtualGL.gpg"
+   ```
+3. Add VirtualGL list to the system:
+    ```bash
+    wget https://raw.githubusercontent.com/VirtualGL/repo/main/VirtualGL.list -O /etc/apt/sources.list.d/VirtualGL.list
+    ```
+
+4. Update the package list:
+    ```bash
+    sudo apt update
+    ```
+5. Install VirtualGL:
+    ```bash
+    sudo apt install virtualgl
+    ```
+
+# Configure VirtualGL
+1. Run the following command to configure VirtualGL:
+   ```bash
+   sudo /opt/VirtualGL/bin/vglserver_config
+   ```
+   This command will prompt you to configure VirtualGL. Follow the instructions to set up VirtualGL for your system.
+   Choose option 1 to configure VirtualGL to use both EGL and GLX. This will allow you to use OpenGL rendering with TurboVNC.

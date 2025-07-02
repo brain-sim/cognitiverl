@@ -13,6 +13,7 @@
 **/*.usda
 **/*.usdc
 **/*.usdz
+**/*pyrightconfig.json
 !source/cognitiverl/cognitiverl/tasks/direct/custom_assets/cognitiverl_simple_better.usd
 
 # Python
