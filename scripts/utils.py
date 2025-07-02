@@ -23,6 +23,7 @@ def seed_everything(
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
 
+
     if isinstance(envs, list):
         for env in envs:
             env.seed(seed=seed)
