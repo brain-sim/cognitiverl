@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import os
 
+import isaaclab.sim as sim_utils
+import isaaclab.terrains as terrain_gen
 import torch
 from isaaclab.sensors import RayCaster, RayCasterCfg, patterns
 from isaaclab.sensors.camera import TiledCamera, TiledCameraCfg
 from isaaclab.sim.spawners.sensors.sensors_cfg import PinholeCameraCfg
+from isaaclab.terrains import TerrainImporter, TerrainImporterCfg
 from termcolor import colored
 
 from .nav_env import NavEnv
@@ -23,8 +26,10 @@ class SpotNavRoughHeightEnv(NavEnv):
         self,
         cfg: SpotNavRoughEnvCfg,
         render_mode: str | None = None,
+        seed: int = 1,
         **kwargs,
     ):
+        self._seed = seed
         super().__init__(cfg, render_mode, **kwargs)
         # Add room size as a class attribute
         self._goal_reached = torch.zeros(
@@ -56,43 +61,47 @@ class SpotNavRoughHeightEnv(NavEnv):
     def _setup_robot_dof_idx(self):
         self._dof_idx, _ = self.robot.find_joints(self.cfg.dof_name)
 
-    # def _setup_plane(self):
-    #     # Create robust rough terrain configuration with safe parameters
-    #     terrain_cfg = TerrainImporterCfg(
-    #         prim_path="/World/ground",
-    #         terrain_type="generator",
-    #         terrain_generator=terrain_gen.TerrainGeneratorCfg(
-    #             size=(1000.0, 1000.0),  # Size of terrain
-    #             border_width=1.0,  # Safe border width (>0 to avoid division issues)
-    #             num_rows=1,  # Single terrain patch
-    #             num_cols=1,  # Single terrain patch
-    #             horizontal_scale=1.0,  # Safe horizontal resolution (>=1.0)
-    #             vertical_scale=0.01,  # Safe vertical resolution (>=0.1)
-    #             slope_threshold=1.0,  # Safe slope threshold (well above 0)
-    #             use_cache=True,  # Enable caching for performance
-    #             sub_terrains={
-    #                 "rough_terrain": terrain_gen.HfRandomUniformTerrainCfg(
-    #                     proportion=1.0,
-    #                     noise_range=(0.05, 0.15),  # Safe noise range (min >= 0.05)
-    #                     noise_step=0.05,  # Safe step size (>= 0.05)
-    #                     border_width=1.0,  # Match outer border width
-    #                 ),
-    #             },
-    #         ),
-    #         max_init_terrain_level=0,  # Single level to avoid complexity
-    #         debug_vis=False,
-    #         physics_material=sim_utils.RigidBodyMaterialCfg(
-    #             friction_combine_mode="multiply",
-    #             restitution_combine_mode="multiply",
-    #             static_friction=max(self.cfg.static_friction, 0.1),  # Ensure >= 0.1
-    #             dynamic_friction=max(self.cfg.dynamic_friction, 0.1),  # Ensure >= 0.1
-    #             restitution=0.0,
-    #         ),
-    #     )
+    def _setup_plane(self):
+        # Create robust rough terrain configuration with safe parameters
+        terrain_cfg = TerrainImporterCfg(
+            prim_path="/World/ground",
+            terrain_type="generator",
+            terrain_generator=terrain_gen.TerrainGeneratorCfg(
+                seed=1,
+                use_cache=True,
+                size=(1000.0, 1000.0),  # Size of terrain
+                border_width=1.0,  # Safe border width (>0 to avoid division issues)
+                num_rows=2,  # Single terrain patch
+                num_cols=2,  # Single terrain patch
+                horizontal_scale=0.5,  # Safe horizontal resolution (>=1.0)
+                vertical_scale=0.05,  # Safe vertical resolution (>=0.1)
+                slope_threshold=1.0,  # Safe slope threshold (well above 0)
+                sub_terrains={
+                    "rough_terrain": terrain_gen.HfRandomUniformTerrainCfg(
+                        proportion=1.0,
+                        noise_range=(0.05, 0.15),  # Safe noise range (min >= 0.05)
+                        noise_step=0.05,  # Safe step size (>= 0.05)
+                        border_width=1.0,  # Match outer border width
+                    ),
+                },
+            ),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(0.06, 0.08, 0.1),  # Dark blue-gray color
+            ),
+            max_init_terrain_level=0,  # Single level to avoid complexity
+            debug_vis=False,
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                friction_combine_mode="multiply",
+                restitution_combine_mode="multiply",
+                static_friction=max(self.cfg.static_friction, 0.1),  # Ensure >= 0.1
+                dynamic_friction=max(self.cfg.dynamic_friction, 0.1),  # Ensure >= 0.1
+                restitution=0.0,
+            ),
+        )
 
-    #     # Create the terrain importer
-    #     terrain_importer = TerrainImporter(terrain_cfg)
-    #     self._terrain_importer = terrain_importer
+        # Create the terrain importer
+        terrain_importer = TerrainImporter(terrain_cfg)
+        self._terrain_importer = terrain_importer
 
     def _setup_config(self):
         # --- Low-level Spot policy integration ---
@@ -101,6 +110,7 @@ class SpotNavRoughHeightEnv(NavEnv):
             "custom_assets",
             self.cfg.policy_file_path,
         )
+
         print(colored(f"[INFO] Loading policy from {policy_file_path}", "green"))
         self.policy = SpotRoughWithHeightPolicyController(policy_file_path)
         # Buffers for previous action and default joint positions
@@ -226,7 +236,7 @@ class SpotNavRoughHeightEnv(NavEnv):
             default_pos,
             joint_pos,
             joint_vel,
-            # height_obs,
+            height_obs,
         )
         # Update previous action buffer
         self._low_level_previous_action = actions.detach()
@@ -334,7 +344,7 @@ class SpotNavRoughHeightEnv(NavEnv):
 
         # Calculate laziness penalty using log
         laziness_penalty = torch.nan_to_num(
-            -self.laziness_penalty_weight * torch.log1p(self._accumulated_laziness),
+            self.laziness_penalty_weight * torch.log1p(self._accumulated_laziness),
             posinf=0.0,
             neginf=0.0,
         )  # log1p(x) = log(1 + x)
@@ -348,7 +358,7 @@ class SpotNavRoughHeightEnv(NavEnv):
             torch.where(
                 min_wall_dist > danger_distance,
                 torch.zeros_like(min_wall_dist),
-                -self.wall_penalty_weight
+                self.wall_penalty_weight
                 * torch.exp(
                     1.0 - min_wall_dist / danger_distance
                 ),  # Exponential penalty
@@ -361,7 +371,6 @@ class SpotNavRoughHeightEnv(NavEnv):
             posinf=0.0,
             neginf=0.0,
         )
-
 
         # Create a tensor of 0s (future), 1s (current), and 2s (completed)
         marker_indices = torch.zeros(
@@ -396,9 +405,9 @@ class SpotNavRoughHeightEnv(NavEnv):
         self.waypoints.visualize(marker_indices=marker_indices)
 
         return {
-            "goal_reached_reward": goal_reached_reward,
-            "linear_speed_reward": linear_speed_reward,
-            "laziness_penalty": laziness_penalty,
-            "wall_penalty": wall_penalty,
-            "fast_goal_reached_reward": fast_goal_reached_reward,
+            "Episode_Reward/goal_reached_reward": goal_reached_reward,
+            "Episode_Reward/linear_speed_reward": linear_speed_reward,
+            "Episode_Reward/laziness_penalty": laziness_penalty,
+            "Episode_Reward/wall_penalty": wall_penalty,
+            "Episode_Reward/fast_goal_reached_reward": fast_goal_reached_reward,
         }

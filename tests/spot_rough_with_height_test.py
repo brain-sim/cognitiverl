@@ -32,6 +32,19 @@ def launch_app():
     parser = argparse.ArgumentParser(
         description="This script demonstrates different legged robots."
     )
+    parser.add_argument(
+        "--renderer",
+        type=str,
+        default="PathTracing",
+        choices=["RayTracedLighting", "PathTracing"],
+        help="Renderer to use.",
+    )
+    parser.add_argument(
+        "--samples_per_pixel_per_frame",
+        type=int,
+        default=1,
+        help="Number of samples per pixel per frame.",
+    )
     # append AppLauncher cli args
     AppLauncher.add_app_launcher_args(parser)
     # parse the arguments
@@ -78,6 +91,7 @@ def make_isaaclab_env(
             if (capture_video and log_dir is not None)
             else None,
             debug=False,
+            play_mode=True,
         )
         return env
 
@@ -154,7 +168,7 @@ def main():
     """Main function."""
     print("[INFO]: Creating environment Spot Nav...")
     env = make_isaaclab_env(
-        "Spot-Nav-Rough-v1",
+        "Spot-Nav-Rough-v0",
         "cuda:0",
         1,
         False,

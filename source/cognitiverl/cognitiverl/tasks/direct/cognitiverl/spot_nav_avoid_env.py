@@ -8,17 +8,17 @@ from isaaclab.sim.spawners.sensors.sensors_cfg import PinholeCameraCfg
 from termcolor import colored
 
 from .nav_env import NavEnv
-from .spot_nav_env_cfg import SpotNavEnvCfg
+from .spot_nav_avoid_env_cfg import SpotNavAvoidEnvCfg
 from .spot_policy_controller import SpotPolicyController
 
 
-class SpotNavEnv(NavEnv):
-    cfg: SpotNavEnvCfg
+class SpotNavAvoidEnv(NavEnv):
+    cfg: SpotNavAvoidEnvCfg  # type: ignore[override]
     ACTION_SCALE = 0.2  # Scale for policy output (delta from default pose)
 
     def __init__(
         self,
-        cfg: SpotNavEnvCfg,
+        cfg: SpotNavAvoidEnvCfg,
         render_mode: str | None = None,
         **kwargs,
     ):
@@ -48,6 +48,14 @@ class SpotNavEnv(NavEnv):
         # Add accumulated laziness tracker
         self._accumulated_laziness = torch.zeros(
             (self.num_envs), device=self.device, dtype=torch.float32
+        )
+
+        # Add avoid goal collision tracking
+        self._episode_avoid_collisions = torch.zeros(
+            (self.num_envs), device=self.device, dtype=torch.int32
+        )
+        self._avoid_goal_hit_this_step = torch.zeros(
+            (self.num_envs), device=self.device, dtype=torch.bool
         )
 
     def _setup_robot_dof_idx(self):
@@ -95,23 +103,35 @@ class SpotNavEnv(NavEnv):
         )  # Cap on accumulated laziness to prevent extreme penalties
         self.wall_penalty_weight = self.cfg.wall_penalty_weight
         self.linear_speed_weight = self.cfg.linear_speed_weight
+        self.throttle_scale = self.cfg.throttle_scale
         self._actions = torch.zeros(
             (self.num_envs, self.cfg.action_space),
             device=self.device,
             dtype=torch.float32,
         )
+        self.steering_scale = self.cfg.steering_scale
         self.throttle_max = self.cfg.throttle_max
         self.steering_max = self.cfg.steering_max
-        self.throttle_min = self.cfg.throttle_min
-        self.steering_min = self.cfg.steering_min
         self._default_pos = self.robot.data.default_joint_pos.clone()
         self._smoothing_factor = torch.tensor([0.75, 0.3, 0.3], device=self.device)
         self.max_episode_length_buf = torch.full(
             (self.num_envs,), self.max_episode_length, device=self.device
         )
 
+        # Add avoid penalty weight
+        self.avoid_penalty_weight = self.cfg.avoid_penalty_weight
+        self.fast_goal_reached_bonus = self.cfg.fast_goal_reached_weight
+        self.avoid_goal_position_tolerance = self.cfg.avoid_goal_position_tolerance
+
+        self.heading_coefficient = self.cfg.heading_coefficient
+        self.heading_progress_weight = self.cfg.heading_progress_weight
+
+        self.termination_on_avoid_goal_collision = (
+            self.cfg.termination_on_avoid_goal_collision
+        )
         self.termination_on_goal_reached = self.cfg.termination_on_goal_reached
         self.termination_on_vehicle_flip = self.cfg.termination_on_vehicle_flip
+        self.termination_on_stuck = self.cfg.termination_on_stuck
 
     def _setup_camera(self):
         camera_prim_path = "/World/envs/env_.*/Robot/body/Camera"
@@ -146,13 +166,13 @@ class SpotNavEnv(NavEnv):
         self._previous_action = actions.clone()
         self._actions = actions.clone()
         self._actions = torch.nan_to_num(self._actions, 0.0)
-        self._actions[:, 0] = (
-            0.5 * (self._actions[:, 0] + 1) * (self.throttle_max - self.throttle_min)
-            + self.throttle_min
+        self._actions[:, 0] = self._actions[:, 0] * self.throttle_scale
+        self._actions[:, 1:] = self._actions[:, 1:] * self.steering_scale
+        self._actions[:, 0] = torch.clamp(
+            self._actions[:, 0], min=0.0, max=self.throttle_max
         )
-        self._actions[:, 1:] = (
-            0.5 * (self._actions[:, 1:] + 1) * (self.steering_max - self.steering_min)
-            + self.steering_min
+        self._actions[:, 1:] = torch.clamp(
+            self._actions[:, 1:], min=-self.steering_max, max=self.steering_max
         )
 
     def _apply_action(self) -> None:
@@ -186,7 +206,6 @@ class SpotNavEnv(NavEnv):
 
     def _get_image_obs(self) -> torch.Tensor:
         image_obs = self.camera.data.output["rgb"].float().permute(0, 3, 1, 2) / 255.0
-        # image_obs = F.interpolate(image_obs, size=(32, 32), mode='bilinear', align_corners=False)
         image_obs = image_obs.reshape(self.num_envs, -1)
         return image_obs
 
@@ -202,17 +221,60 @@ class SpotNavEnv(NavEnv):
             dim=-1,
         )
 
-    # def _check_stuck_termination(self, max_steps: int = 300) -> torch.Tensor:
-    #     """Early termination if robot is stuck/wandering without progress"""
-    #     # If no goal reached in last max_steps and barely moving, terminate
-    #     steps_since_goal = (
-    #         self.episode_length_buf - self._previous_waypoint_reached_step
-    #     )
-    #     stuck_too_long = steps_since_goal > max_steps
-    #     return stuck_too_long
+    def _check_stuck_termination(self, max_steps: int = 300) -> torch.Tensor:
+        """Early termination if robot is stuck/wandering without progress"""
+        # If no goal reached in last max_steps and barely moving, terminate
+        steps_since_goal = (
+            self.episode_length_buf - self._previous_waypoint_reached_step
+        )
+        stuck_too_long = steps_since_goal > max_steps
+        return stuck_too_long
+
+    def _check_avoid_goal_collision(self) -> torch.Tensor:
+        """Check if the robot has collided with the avoid goal"""
+        # Check for avoid goal collisions (future waypoints) - VECTORIZED VERSION
+        robot_positions = self.robot.data.root_pos_w[:, :2]  # (num_envs, 2)
+
+        # Create mask for future waypoints (goals with index > current target index)
+        goal_indices = torch.arange(self._num_goals, device=self.device).unsqueeze(
+            0
+        )  # (1, num_goals)
+        target_indices = self._target_index.unsqueeze(1)  # (num_envs, 1)
+        future_waypoint_mask = goal_indices > target_indices  # (num_envs, num_goals)
+
+        # Calculate distances from each robot to all waypoints
+        # robot_positions: (num_envs, 2) -> (num_envs, 1, 2)
+        # _target_positions: (num_envs, num_goals, 2)
+        robot_pos_expanded = robot_positions.unsqueeze(1)  # (num_envs, 1, 2)
+        distances = torch.norm(
+            robot_pos_expanded - self._target_positions, dim=2
+        )  # (num_envs, num_goals)
+
+        # Apply future waypoint mask and check for collisions
+        future_distances = (
+            distances * future_waypoint_mask.float()
+        )  # Zero out non-future waypoints
+        future_distances = torch.where(
+            future_waypoint_mask,
+            future_distances,
+            torch.full_like(future_distances, float("inf")),  # Set non-future to inf
+        )
+
+        # Check which environments have collisions with future waypoints
+        collision_mask = (
+            future_distances < self.avoid_goal_position_tolerance
+        )  # (num_envs, num_goals)
+        env_has_collision = collision_mask.any(dim=1)  # (num_envs,)
+        return env_has_collision
 
     def _get_rewards(self) -> dict[str, torch.Tensor]:
         goal_reached = self._position_error < self.position_tolerance
+        target_heading_rew = self.heading_progress_weight * torch.exp(
+            -torch.abs(self.target_heading_error) / self.heading_coefficient
+        )
+        target_heading_rew = torch.nan_to_num(
+            target_heading_rew, posinf=0.0, neginf=0.0
+        )
         goal_reached_reward = self.goal_reached_bonus * torch.nan_to_num(
             torch.where(
                 goal_reached,
@@ -222,6 +284,16 @@ class SpotNavEnv(NavEnv):
             posinf=0.0,
             neginf=0.0,
         )
+
+        # Apply penalties for environments with collisions
+        env_has_collision = self._check_avoid_goal_collision()
+        avoid_penalty = torch.zeros(
+            (self.num_envs), device=self.device, dtype=torch.float32
+        )
+        avoid_penalty[env_has_collision] = self.avoid_penalty_weight
+        self._avoid_goal_hit_this_step[env_has_collision] = True
+        self._episode_avoid_collisions += env_has_collision.int()
+
         self._target_index = self._target_index + goal_reached
         self._episode_waypoints_passed += goal_reached.int()
         self.task_completed = self._target_index > (self._num_goals - 1)
@@ -231,17 +303,17 @@ class SpotNavEnv(NavEnv):
             < self.episode_length_buf[goal_reached]
         ).all(), "Previous waypoint reached step is greater than episode length"
         # Compute k using torch.log
-        k = torch.log(torch.tensor(125.0, device=self.device)) / (
-            self.max_episode_length - 1
-        )
+        k = torch.log(
+            torch.tensor(self.fast_goal_reached_bonus, device=self.device)
+        ) / (self.max_episode_length - 1)
         steps_taken = self.episode_length_buf - self._previous_waypoint_reached_step
         fast_goal_reached_reward = torch.where(
             goal_reached,
-            125.0 * torch.exp(-k * (steps_taken - 1)),
+            self.fast_goal_reached_bonus * torch.exp(-k * (steps_taken - 1)),
             torch.zeros_like(self._previous_waypoint_reached_step),
         )
         fast_goal_reached_reward = torch.clamp(
-            fast_goal_reached_reward, min=0.0, max=125.0
+            fast_goal_reached_reward, min=0.0, max=self.fast_goal_reached_bonus
         )
         self._previous_waypoint_reached_step = torch.where(
             goal_reached,
@@ -276,7 +348,7 @@ class SpotNavEnv(NavEnv):
         )
         # Calculate laziness penalty using log
         laziness_penalty = torch.nan_to_num(
-            self.laziness_penalty_weight * torch.log1p(self._accumulated_laziness),
+            -self.laziness_penalty_weight * torch.log1p(self._accumulated_laziness),
             posinf=0.0,
             neginf=0.0,
         )  # log1p(x) = log(1 + x)
@@ -335,4 +407,6 @@ class SpotNavEnv(NavEnv):
             "Episode_Reward/laziness_penalty": laziness_penalty,
             "Episode_Reward/wall_penalty": wall_penalty,
             "Episode_Reward/fast_goal_reached_reward": fast_goal_reached_reward,
+            "Episode_Reward/avoid_penalty": avoid_penalty,
+            "Episode_Reward/target_heading_rew": target_heading_rew,
         }

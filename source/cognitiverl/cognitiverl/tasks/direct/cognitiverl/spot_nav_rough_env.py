@@ -134,7 +134,6 @@ class SpotNavRoughEnv(NavEnv):
         )
         self.steering_scale = self.cfg.steering_scale
         self.throttle_max = self.cfg.throttle_max
-        self.throttle_min = self.cfg.throttle_min
         self.steering_max = self.cfg.steering_max
         self._default_pos = self.robot.data.default_joint_pos.clone()
         self._smoothing_factor = torch.tensor([0.7, 0.5, 0.5], device=self.device)
@@ -178,7 +177,7 @@ class SpotNavRoughEnv(NavEnv):
         self._actions[:, 0] = self._actions[:, 0] * self.throttle_scale
         self._actions[:, 1:] = self._actions[:, 1:] * self.steering_scale
         self._actions[:, 0] = torch.clamp(
-            self._actions[:, 0], min=self.throttle_min, max=self.throttle_max
+            self._actions[:, 0], min=0, max=self.throttle_max
         )
         self._actions[:, 1:] = torch.clamp(
             self._actions[:, 1:], min=-self.steering_max, max=self.steering_max
@@ -312,7 +311,7 @@ class SpotNavRoughEnv(NavEnv):
 
         # Calculate laziness penalty using log
         laziness_penalty = torch.nan_to_num(
-            -self.laziness_penalty_weight * torch.log1p(self._accumulated_laziness),
+            self.laziness_penalty_weight * torch.log1p(self._accumulated_laziness),
             posinf=0.0,
             neginf=0.0,
         )  # log1p(x) = log(1 + x)
@@ -325,7 +324,7 @@ class SpotNavRoughEnv(NavEnv):
             torch.where(
                 min_wall_dist > danger_distance,
                 torch.zeros_like(min_wall_dist),
-                -self.wall_penalty_weight
+                self.wall_penalty_weight
                 * torch.exp(
                     1.0 - min_wall_dist / danger_distance
                 ),  # Exponential penalty

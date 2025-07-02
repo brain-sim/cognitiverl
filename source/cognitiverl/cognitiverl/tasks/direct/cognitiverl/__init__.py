@@ -35,7 +35,7 @@ gym.register(
 
 gym.register(
     id="Spot-Nav-Rough-v0",
-    entry_point=f"{__name__}.spot_nav_rough_env:SpotNavRoughEnv",
+    entry_point=f"{__name__}.spot_nav_rough_height_env:SpotNavRoughHeightEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.spot_nav_rough_env_cfg:SpotNavRoughEnvCfg",
@@ -44,9 +44,27 @@ gym.register(
 
 gym.register(
     id="Spot-Nav-Rough-v1",
-    entry_point=f"{__name__}.spot_nav_rough_height_env:SpotNavRoughHeightEnv",
+    entry_point=f"{__name__}.spot_nav_rough_env:SpotNavRoughEnv",
     disable_env_checker=True,
     kwargs={
         "env_cfg_entry_point": f"{__name__}.spot_nav_rough_env_cfg:SpotNavRoughEnvCfg",
+    },
+)
+
+gym.register(
+    id="Spot-Nav-Avoid-v0",
+    entry_point=f"{__name__}.spot_nav_avoid_env:SpotNavAvoidEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.spot_nav_avoid_env_cfg:SpotNavAvoidEnvCfg",
+    },
+)
+
+gym.register(
+    id="Spot-Nav-Grid-v0",
+    entry_point=f"{__name__}.spot_nav_rough_grid_height_env:SpotNavRoughGridHeightEnv",
+    disable_env_checker=True,
+    kwargs={
+        "env_cfg_entry_point": f"{__name__}.spot_nav_rough_env_cfg:SpotNavRoughGridHeightEnvCfg",
     },
 )

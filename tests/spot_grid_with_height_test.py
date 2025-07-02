@@ -32,6 +32,19 @@ def launch_app():
     parser = argparse.ArgumentParser(
         description="This script demonstrates different legged robots."
     )
+    parser.add_argument(
+        "--renderer",
+        type=str,
+        default="PathTracing",
+        choices=["RayTracedLighting", "PathTracing"],
+        help="Renderer to use.",
+    )
+    parser.add_argument(
+        "--samples_per_pixel_per_frame",
+        type=int,
+        default=1,
+        help="Number of samples per pixel per frame.",
+    )
     # append AppLauncher cli args
     AppLauncher.add_app_launcher_args(parser)
     # parse the arguments
@@ -77,6 +90,7 @@ def make_isaaclab_env(
             render_mode="rgb_array"
             if (capture_video and log_dir is not None)
             else None,
+            debug=False,
             play_mode=True,
         )
         return env
@@ -106,19 +120,17 @@ except ImportError:
 
 # Keyboard mapping: (forward, left, yaw)
 KEYBOARD_MAPPING = {
-    "w": (1.0, 0.0),
-    "s": (-1.0, 0.0),
-    "a": (1.0, 1.0),
-    "d": (1.0, -1.0),
-    "z": (-1.0, 2.0),  # backward left
-    "c": (-1.0, -2.0),  # backward right
+    "w": (9.0, 0.0, 0.0),  # forward
+    "s": (-9.0, 0.0, 0.0),  # backward
+    "a": (0.0, 4.5, 0.0),  # left
+    "d": (0.0, -4.5, 0.0),  # right
+    "q": (0.0, 0.0, 4.5),  # yaw left
+    "e": (0.0, 0.0, -4.5),  # yaw right
+    "o": (0.0, 0.0, 0.0),  # reset
 }
 
-# Global action variable
 action = None
 exit_flag = False
-
-# Add this global variable
 key_pressed = False
 
 
@@ -132,7 +144,7 @@ def on_press(key):
             return False  # Stop listener
         elif k in KEYBOARD_MAPPING:
             delta = torch.tensor(KEYBOARD_MAPPING[k], dtype=torch.float32)
-            action[:2] = delta
+            action[:3] = delta
             key_pressed = True
             print(f"[DEBUG]: Action updated: {action.tolist()}")
         elif k == " ":
@@ -156,7 +168,7 @@ def main():
     """Main function."""
     print("[INFO]: Creating environment Spot Nav...")
     env = make_isaaclab_env(
-        "Leatherback-Nav-v0",
+        "Spot-Nav-Grid-v0",
         "cuda:0",
         1,
         False,
@@ -164,13 +176,13 @@ def main():
     )()
     print("[INFO]: Environment Spot Nav has been created.")
     global action, key_pressed
+    obs, _ = env.reset()
     action = torch.zeros(env.action_space.shape, dtype=torch.float32)
     print(
         "[INFO]: Use WASD to move, Q/E to yaw. Press 'x' to exit, 'r' to reset, space to zero action."
     )
 
     start_keyboard_listener()
-    obs, _ = env.reset()
     while not exit_flag:
         if key_pressed:
             step_action = action.clone()
@@ -179,11 +191,6 @@ def main():
         else:
             step_action = torch.zeros_like(action)
         _, reward, _, _, _ = env.step(step_action)
-
-        # Optionally, add a small sleep to avoid maxing out CPU
-        import time
-
-        time.sleep(2)
     env.close()
 
 

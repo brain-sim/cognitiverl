@@ -153,7 +153,7 @@ class LeatherbackNavEnv(NavEnv):
         )
 
         # Calculate laziness penalty using log
-        laziness_penalty = -self.laziness_penalty_weight * torch.nan_to_num(
+        laziness_penalty = self.laziness_penalty_weight * torch.nan_to_num(
             torch.log1p(self._accumulated_laziness),
             posinf=0.0,
             neginf=0.0,
@@ -166,7 +166,7 @@ class LeatherbackNavEnv(NavEnv):
         wall_penalty = torch.where(
             min_wall_dist > danger_distance,
             torch.zeros_like(min_wall_dist),
-            -self.wall_penalty_weight
+            self.wall_penalty_weight
             * torch.exp(1.0 - min_wall_dist / danger_distance),  # Exponential penalty
         )
         linear_speed_reward = self.linear_speed_weight * torch.nan_to_num(

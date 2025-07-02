@@ -27,6 +27,11 @@ class NavEnvCfg(DirectRLEnvCfg):
     # simulation
     sim: SimulationCfg = SimulationCfg(dt=1 / 60, render_interval=decimation)
 
+    img_size = [3, 128, 128]
+    observation_space = (
+        img_size[0] * img_size[1] * img_size[2] + 4
+    )  # Changed from 8 to 9 to include minimum wall distance
+
     # scene
     env_spacing = 40.0
     scene: InteractiveSceneCfg = InteractiveSceneCfg(
@@ -42,4 +47,10 @@ class NavEnvCfg(DirectRLEnvCfg):
     wall_thickness = 2.0
     wall_height = 3.0
     position_tolerance = waypoint_cfg.markers["marker1"].radius
-    position_margin_epsilon = 0.2
+    avoid_goal_position_tolerance = waypoint_cfg.markers["marker0"].radius
+
+    position_margin_epsilon = 0.2  # TODO: can be removed needed to be tested
+
+    # Terminations
+    termination_on_goal_reached = True
+    termination_on_vehicle_flip = True

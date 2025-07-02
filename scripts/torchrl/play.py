@@ -4,6 +4,7 @@ import sys
 from dataclasses import asdict
 
 import gymnasium as gym
+import imageio  # Added for video writing
 import numpy as np
 import torch
 import tqdm
@@ -12,7 +13,8 @@ import wandb
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from isaaclab.utils import configclass
 from models import CNNPPOAgent
-from utils import load_args  # add load_args import
+from termcolor import colored
+from utils import load_args, print_dict  # add load_args import
 
 ### TODO : Make play callable while training and after training.
 ### Solution - Use ManagerBasedRL or multi threading or multiprocessing to run train and eval.
@@ -47,6 +49,10 @@ class EnvArgs:
     """run training in headless mode"""
     enable_cameras: bool = False
     """enable cameras to record sensor inputs."""
+    # renderer: str = "PathTracing"  # "PathTracing" or "RayTracedLighting"
+    # """Renderer to use."""
+    # samples_per_pixel_per_frame: int = 1
+    # """Number of samples per pixel per frame."""
 
 
 @configclass
@@ -58,11 +64,11 @@ class ExperimentArgs:
     device: str = "cuda:0"
     """device to use for training"""
 
-    checkpoint_path: str = "/home/user/cognitiverl/wandb/offline-run-20250602_194417-pnrq9ikt/files/checkpoints/ckpt_20480.pt"
+    checkpoint_path: str = "/home/user/cognitiverl/wandb/run-20250701_001447-0ldtuxzk/files/checkpoints/ckpt_4915200.pt"
     """path to the checkpoint to load"""
-    num_eval_envs: int = 10
+    num_eval_envs: int = 32
     """number of environments to run for evaluation/play."""
-    num_eval_env_steps: int = 50
+    num_eval_env_steps: int = 1000
     """number of steps to run for evaluation/play."""
     agent: str = "CNNPPOAgent"
 
@@ -106,7 +112,6 @@ def make_isaaclab_env(
 ):
     import isaaclab_tasks  # noqa: F401
     from isaaclab_rl.torchrl import (
-        IsaacLabRecordEpisodeStatistics,
         IsaacLabVecEnvWrapper,
     )
     from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
@@ -123,8 +128,8 @@ def make_isaaclab_env(
             render_mode="rgb_array"
             if (capture_video and log_dir is not None)
             else None,
+            play_mode=True,
         )
-        env = IsaacLabRecordEpisodeStatistics(env)
         if capture_video and log_dir is not None:
             video_kwargs = {
                 "video_folder": os.path.join(log_dir, "videos", "play"),
@@ -140,6 +145,7 @@ def make_isaaclab_env(
 
 
 def main(args):
+    print_dict(args)
     run_name = f"{args.task}__{args.exp_name}"
     run = wandb.init(
         project="play",
@@ -158,6 +164,10 @@ def main(args):
         log_dir=run_dir,
     )()
 
+    # Set camera eye position to (0, 0, 45) looking at origin
+    print("📷 Setting camera eye position to (0, 0, 45)")
+    eval_envs.unwrapped.sim.set_camera_view(eye=[0, 0, 60], target=[0.0, 0.0, 0.0])
+
     n_obs = int(np.prod(eval_envs.observation_space.shape[1:]))
     n_act = int(np.prod(eval_envs.action_space.shape[1:]))
     assert isinstance(eval_envs.action_space, gym.spaces.Box), (
@@ -169,8 +179,18 @@ def main(args):
     }
 
     agent_class = AGENT_LOOKUP[args.agent]
-    agent = agent_class(n_obs, n_act)
-    agent.load_state_dict(torch.load(args.checkpoint_path))
+    agent = agent_class(n_obs, n_act, img_size=eval_envs.unwrapped.cfg.img_size)
+    print(
+        colored(
+            "[INFO] : Loading agent from {args.checkpoint_path}",
+            "green",
+            attrs=["bold"],
+        )
+    )
+    checkpoint = torch.load(
+        args.checkpoint_path, map_location="cpu", weights_only=False
+    )
+    agent.load_state_dict(checkpoint["ema_model_state_dict"])
     device = (
         torch.device(args.device) if torch.cuda.is_available() else torch.device("cpu")
     )
@@ -185,32 +205,77 @@ def main(args):
         obs, _ = eval_envs.reset()
         step, global_step = 0, 0
         done = torch.zeros(args.num_eval_envs, dtype=torch.bool)
+
+        # Initialize storage for observations
+        obs_history = []
+
+        # Create video directory
+        video_dir = os.path.join(run_dir, "videos", "play")
+        os.makedirs(video_dir, exist_ok=True)
+
+        img_size = eval_envs.unwrapped.cfg.img_size
+
         pbar = tqdm.tqdm(total=args.num_eval_env_steps)
         while step < args.num_eval_env_steps and not done.all():
-            action, _, _, _ = play_agent.get_action_and_value(obs)
+            # Store current observations
+            obs_history.append(obs.clone().cpu().numpy())
+
+            action = play_agent.get_action(obs)
             obs, _, done, _ = eval_envs.step(action)
             step += 1
             global_step += args.num_eval_envs
             pbar.update(1)
             pbar.set_description(f"step: {step}")
+
+        # Save final observation
+        obs_history.append(obs.clone().cpu().numpy())
+
+        # Convert observations to videos for each environment
+        obs_array = np.array(obs_history)  # Shape: (steps, n_envs, obs_dim)
+
+        # Create videos for each environment
+        for env_idx in range(args.num_eval_envs):
+            # Extract observations for this environment
+            env_obs = obs_array[
+                :, env_idx, : img_size[0] * img_size[1] * img_size[2]
+            ]  # Take RGB channels
+            # Reshape to (steps, height, width, channels)
+            env_frames = env_obs.reshape(
+                -1, img_size[0], img_size[1], img_size[2]
+            ).transpose(0, 2, 3, 1)
+
+            # Convert from float [0,1] to uint8 [0,255] if needed
+            if env_frames.max() <= 1.0:
+                env_frames = (env_frames * 255).astype(np.uint8)
+            else:
+                env_frames = env_frames.astype(np.uint8)
+
+            # No need to convert RGB to BGR for imageio (keep RGB format)
+
+            # Create video using imageio
+            video_path = os.path.join(video_dir, f"env_{env_idx}_fpp.mp4")
+
+            # Save video with imageio
+            imageio.mimwrite(video_path, env_frames, fps=30, quality=8)
+
+            print(f"Saved video for environment {env_idx}: {video_path}")
+
         eval_envs.close()
-        print(eval_envs.video_name)
+
+        # Log videos to wandb if capture_video is enabled
         if args.capture_video:
-            wandb.log(
-                {
-                    f"{mode}/video_episode": wandb.Video(
-                        os.path.join(
-                            run_dir,
-                            "videos",
-                            "play",
-                            f"{eval_envs.video_name}.mp4",
-                        ),
-                        format="mp4",
-                        fps=30,
-                    )
-                },
-                step=global_step,
-            )
+            for env_idx in range(args.num_eval_envs):
+                video_path = os.path.join(video_dir, f"env_{env_idx}_fpp.mp4")
+                wandb.log(
+                    {
+                        f"{mode}/env_{env_idx}_video": wandb.Video(
+                            video_path,
+                            format="mp4",
+                            fps=30,
+                        )
+                    },
+                    step=global_step,
+                )
 
     run_play(agent)
     wandb.finish()
@@ -218,6 +283,7 @@ def main(args):
 
 if __name__ == "__main__":
     try:
+        os.environ["WANDB_MODE"] = "dryrun"
         main(args)
     except Exception as e:
         print("Exception:", e)
