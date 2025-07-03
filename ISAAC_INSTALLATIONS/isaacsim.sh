@@ -11,34 +11,25 @@ set -e
 
 # Parse command line arguments
 if [ $# -ge 1 ] && [ "$1" != "" ]; then
-    HOME_PATH="$1"
-    echo "🔧 Using custom HOME path: $HOME_PATH"
+    ISAACSIM_PATH="$1"
+    echo "🔧 Using custom HOME path: $ISAACSIM_PATH"
 else
-    HOME_PATH="$HOME"
-    echo "🔧 Using default HOME path: $HOME_PATH"
+    ISAACSIM_PATH="$HOME/IsaacSim"
+    echo "🔧 Using default HOME path: $ISAACSIM_PATH"
 fi
 
-if [ $# -ge 2 ] && [ "$2" != "" ]; then
-    UV_ENV_PATH="$2"
-    echo "🔧 Using custom UV environment path: $UV_ENV_PATH"
-else
-    UV_ENV_PATH="$HOME_PATH/.venv/test_env"
-    echo "🔧 Using default UV environment path: $UV_ENV_PATH"
-fi
-
-# Validate HOME_PATH exists
-if [ ! -d "$HOME_PATH" ]; then
-    echo "❌ Error: HOME path does not exist: $HOME_PATH"
+# Validate ISAACSIM_PATH exists
+if [ ! -d "$ISAACSIM_PATH" ]; then
+    echo "❌ Error: ISAACSIM_PATH path does not exist: $ISAACSIM_PATH"
     exit 1
 fi
 
 # Print usage information
 print_usage() {
-    echo "Usage: $0 [HOME_PATH] [UV_ENV_PATH]"
+    echo "Usage: $0 [ISAACSIM_PATH]"
     echo ""
     echo "Arguments:"
-    echo "  HOME_PATH    - Custom home directory path (default: \$HOME)"
-    echo "  UV_ENV_PATH  - Custom UV virtual environment path (default: \$HOME/.venv/test_env)"
+    echo "  ISAACSIM_PATH    - Custom home directory path (default: \$HOME)"
     echo ""
     echo "Examples:"
     echo "  $0                                    # Use defaults"
@@ -54,8 +45,7 @@ if [ "$1" == "--help" ] || [ "$1" == "-h" ]; then
 fi
 
 echo "=== Isaac Sim 5.0.0 UV Environment Setup ==="
-echo "🏠 Home Path: $HOME_PATH"
-echo "🐍 UV Environment Path: $UV_ENV_PATH"
+echo "🏠 Home Path: $ISAACSIM_PATH"
 echo ""
 
 # ============================================================================
@@ -65,13 +55,13 @@ echo "🔧 Loading Isaac Sim environment from ~/.bash_isaacsim..."
 
 # Function to create .bash_isaacsim if it doesn't exist
 create_bash_isaacsim() {
-    echo "🔧 Creating $HOME_PATH/.bash_isaacsim..."
-    cat > "$HOME_PATH/.bash_isaacsim" << EOF
+    echo "🔧 Creating $HOME/.bash_isaacsim..."
+    cat > "$HOME/.bash_isaacsim" << EOF
 # ~/.bash_isaacsim - Isaac Sim 5.0.0 Environment Variables
 # This file is sourced by ~/.bashrc
 
 # Isaac Sim path configuration
-export ISAAC_SIM_PATH="$HOME_PATH/IsaacSim/_build/linux-x86_64/release"
+export ISAAC_SIM_PATH="$ISAACSIM_PATH/_build/linux-x86_64/release"
 
 # Check if Isaac Sim build exists
 if [ ! -d "\$ISAAC_SIM_PATH" ]; then
@@ -115,79 +105,63 @@ if [[ \$- == *i* ]]; then
     echo "✅ Isaac Sim 5.0.0 environment loaded"
 fi
 EOF
-    echo "✅ $HOME_PATH/.bash_isaacsim created"
+    echo "✅ $HOME/.bash_isaacsim created"
 }
 
 # Function to add sourcing to .bashrc if not already present
 setup_bashrc_sourcing() {
-    if [ -f "$HOME_PATH/.bashrc" ]; then
+    if [ -f "$HOME/.bashrc" ]; then
         # Check if .bash_isaacsim is already sourced in .bashrc
-        if ! grep -q "bash_isaacsim" "$HOME_PATH/.bashrc"; then
-            echo "🔧 Adding .bash_isaacsim sourcing to $HOME_PATH/.bashrc..."
-            cat >> "$HOME_PATH/.bashrc" << EOF
+        if ! grep -q "bash_isaacsim" "$HOME/.bashrc"; then
+            echo "🔧 Adding .bash_isaacsim sourcing to $HOME/.bashrc..."
+            cat >> "$HOME/.bashrc" << EOF
 
 # Isaac Sim 5.0.0 Environment
-if [ -f "$HOME_PATH/.bash_isaacsim" ]; then
-    source "$HOME_PATH/.bash_isaacsim"
+if [ -f "$HOME/.bash_isaacsim" ]; then
+    source "$HOME/.bash_isaacsim"
 fi
 EOF
-            echo "✅ $HOME_PATH/.bashrc updated to source .bash_isaacsim"
+            echo "✅ $HOME/.bashrc updated to source .bash_isaacsim"
         else
-            echo "✅ $HOME_PATH/.bashrc already sources .bash_isaacsim"
+            echo "✅ $HOME/.bashrc already sources .bash_isaacsim"
         fi
     else
-        echo "⚠️  $HOME_PATH/.bashrc not found, creating it..."
-        cat > "$HOME_PATH/.bashrc" << EOF
+        echo "⚠️  $HOME/.bashrc not found, creating it..."
+        cat > "$HOME/.bashrc" << EOF
 # Isaac Sim 5.0.0 Environment
-if [ -f "$HOME_PATH/.bash_isaacsim" ]; then
-    source "$HOME_PATH/.bash_isaacsim"
+if [ -f "$HOME/.bash_isaacsim" ]; then
+    source "$HOME/.bash_isaacsim"
 fi
 EOF
-        echo "✅ $HOME_PATH/.bashrc created with .bash_isaacsim sourcing"
+        echo "✅ $HOME/.bashrc created with .bash_isaacsim sourcing"
     fi
 }
 
 # Check if .bash_isaacsim exists, create if not
-if [ ! -f "$HOME_PATH/.bash_isaacsim" ]; then
-    echo "📝 $HOME_PATH/.bash_isaacsim not found, creating it..."
+if [ ! -f "$HOME/.bash_isaacsim" ]; then
+    echo "📝 $HOME/.bash_isaacsim not found, creating it..."
     create_bash_isaacsim
     setup_bashrc_sourcing
 else
-    echo "✅ $HOME_PATH/.bash_isaacsim already exists"
+    echo "✅ $HOME/.bash_isaacsim already exists"
 fi
 
 # Source the Isaac Sim environment
-if [ -f "$HOME_PATH/.bash_isaacsim" ]; then
-    source "$HOME_PATH/.bash_isaacsim"
+if [ -f "$HOME/.bash_isaacsim" ]; then
+    source "$HOME/.bash_isaacsim"
     echo "✅ Isaac Sim environment loaded"
 else
-    echo "❌ Error: Failed to create $HOME_PATH/.bash_isaacsim"
+    echo "❌ Error: Failed to create $HOME/.bash_isaacsim"
     exit 1
 fi
 
-# ============================================================================
-# 2. ACTIVATE UV VIRTUAL ENVIRONMENT
-# ============================================================================
-echo "🔧 Activating UV virtual environment..."
-
-# Check if UV environment exists
-if [ ! -d "$UV_ENV_PATH" ]; then
-    echo "❌ Error: UV environment not found at $UV_ENV_PATH"
-    echo "💡 Create it with: uv venv $UV_ENV_PATH"
-    exit 1
-fi
-
-# Activate UV environment
-source "$UV_ENV_PATH/bin/activate"
+echo "✅ Inside activated UV environment: $VIRTUAL_ENV"
 
 # Verify activation
 if [ -z "$VIRTUAL_ENV" ]; then
     echo "❌ Error: UV virtual environment not activated properly"
     exit 1
 fi
-
-echo "✅ UV environment activated: $VIRTUAL_ENV"
-
 # ============================================================================
 # 3. ENSURE ISAAC SIM COMPATIBILITY WITH UV
 # ============================================================================
@@ -213,15 +187,8 @@ create_isaacsim_wrapper() {
 # Isaac Sim 5.0.0 launcher with UV environment support
 
 # Source Isaac Sim environment
-if [ -f "$HOME_PATH/.bash_isaacsim" ]; then
-    source "$HOME_PATH/.bash_isaacsim" >/dev/null 2>&1
-fi
-
-# Ensure we're in the correct UV environment
-if [[ "\$VIRTUAL_ENV" != *"$(basename "$UV_ENV_PATH")"* ]]; then
-    echo "❌ Error: Not in $(basename "$UV_ENV_PATH") virtual environment"
-    echo "Please run: source $UV_ENV_PATH/bin/activate"
-    exit 1
+if [ -f "$HOME/.bash_isaacsim" ]; then
+    source "$HOME/.bash_isaacsim" >/dev/null 2>&1
 fi
 
 # Parse arguments and launch Isaac Sim
@@ -269,7 +236,7 @@ import os
 import subprocess
 
 # Isaac Sim configuration
-ISAAC_SIM_PATH = "$HOME_PATH/IsaacSim/_build/linux-x86_64/release"
+ISAAC_SIM_PATH = "$ISAACSIM_PATH/_build/linux-x86_64/release"
 
 # Set required environment variables
 os.environ['ISAAC_PATH'] = ISAAC_SIM_PATH
