@@ -3,7 +3,6 @@ import os
 import sys
 import time
 from dataclasses import asdict
-from typing import List
 
 import gymnasium as gym
 import numpy as np
@@ -19,6 +18,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from isaaclab.utils import configclass
 from models import CNNPPOAgent, MLPPPOAgent
 from utils import load_args, print_dict, seed_everything, update_learning_rate_adaptive
+from wrappers import IsaacLabVecEnvWrapper
 
 
 @configclass
@@ -48,10 +48,10 @@ class EnvArgs:
     enable_cameras: bool = False
     """enable cameras to record sensor inputs."""
 
-    # renderer: str = "PathTracing"
-    # """Renderer to use."""
-    # samples_per_pixel_per_frame: int = 1
-    # """Number of samples per pixel per frame."""
+    renderer: str = "PathTracing"
+    """Renderer to use."""
+    samples_per_pixel_per_frame: int = 1
+    """Number of samples per pixel per frame."""
 
 
 @configclass
@@ -143,7 +143,7 @@ class ExperimentArgs:
     lr_multiplier: float = 1.5
     """Factor to multiply/divide learning rate by"""
 
-    img_size: List[int] = [3, 32, 32]
+    img_size: list[int] = [3, 32, 32]
     """the size of the image"""
     resume_from_checkpoint: str = ""
     """the path to the checkpoint to resume from"""
@@ -208,9 +208,6 @@ def make_isaaclab_env(
     **kwargs,
 ):
     import isaaclab_tasks  # noqa: F401
-    from isaaclab_rl.torchrl import (
-        IsaacLabVecEnvWrapper,
-    )
     from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
     import cognitiverl.tasks  # noqa: F401
@@ -273,7 +270,6 @@ def update_ema_weights(ema_agent, agent, decay):
 
 
 def main(args):
-    print_dict(colored(args, "green", attrs=["bold"]), nesting=4)
     run_name = f"{args.task}__{args.exp_name}__{args.seed}"
 
     args.batch_size = int(args.num_envs * args.num_steps)
@@ -322,6 +318,8 @@ def main(args):
         args.disable_fabric,
         max_total_steps=args.total_timesteps,
     )()
+    args.img_size = envs.unwrapped.cfg.img_size
+    print_dict(colored(args, "green", attrs=["bold"]), nesting=4)
     # TRY NOT TO MODIFY: seeding
     seed_everything(
         envs,
@@ -338,8 +336,7 @@ def main(args):
     )
 
     if args.agent_type == "CNNPPOAgent":
-        print("img_size:", envs.unwrapped.cfg.img_size)
-        agent = CNNPPOAgent(n_obs, n_act, img_size=envs.unwrapped.cfg.img_size)
+        agent = CNNPPOAgent(n_obs, n_act, img_size=args.img_size)
         if args.resume_from_checkpoint:
             agent.load_from_checkpoint(args.resume_from_checkpoint)
             print(

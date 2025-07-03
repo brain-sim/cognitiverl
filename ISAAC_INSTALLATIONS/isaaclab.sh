@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Copyright (c) 2022-2025, The Isaac Lab Project Developers.
+# Copyright (c) 2022-2025, The Isaac Lab Project Developers (https://github.com/isaac-sim/IsaacLab/blob/main/CONTRIBUTORS.md).
 # All rights reserved.
 #
 # SPDX-License-Identifier: BSD-3-Clause
@@ -13,16 +13,44 @@
 set -e
 
 # Set tab-spaces
-if [ -t 1 ]; then
-    tabs 4
-fi
+tabs 4
 
 # get source directory
-export ISAACLAB_PATH="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+# Check if ISAACLAB_PATH argument is provided, otherwise use default
+# Only treat $1 as a path if it doesn't start with a dash (not a command flag)
+if [ $# -gt 0 ] && [ -n "$1" ] && [[ "$1" != -* ]]; then
+    export ISAACLAB_PATH="$1"
+    # Shift the path argument so it doesn't interfere with command parsing
+    shift
+else
+    export ISAACLAB_PATH="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+fi
 
+echo "ISAACLAB_PATH: $ISAACLAB_PATH"
 #==
 # Helper functions
 #==
+
+# install system dependencies
+install_system_deps() {
+    # check if cmake is already installed
+    if command -v cmake &> /dev/null; then
+        echo "[INFO] cmake is already installed."
+    else
+        # check if running as root
+        if [ "$EUID" -ne 0 ]; then
+            echo "[INFO] Installing system dependencies..."
+            sudo apt-get update && sudo apt-get install -y --no-install-recommends \
+                cmake \
+                build-essential
+        else
+            echo "[INFO] Installing system dependencies..."
+            apt-get update && apt-get install -y --no-install-recommends \
+                cmake \
+                build-essential
+        fi
+    fi
+}
 
 # check if running in docker
 is_docker() {
@@ -51,7 +79,7 @@ extract_isaacsim_path() {
         # throw an error if no path is found
         echo -e "[ERROR] Unable to find the Isaac Sim directory: '${isaac_path}'" >&2
         echo -e "\tThis could be due to the following reasons:" >&2
-        echo -e "\t1. uv or conda environment is not activated." >&2
+        echo -e "\t1. Conda environment is not activated." >&2
         echo -e "\t2. Isaac Sim pip package 'isaacsim-rl' is not installed." >&2
         echo -e "\t3. Isaac Sim directory is not available at the default path: ${ISAACLAB_PATH}/_isaac_sim" >&2
         # exit the script
@@ -63,6 +91,7 @@ extract_isaacsim_path() {
 
 # extract the python from isaacsim
 extract_python_exe() {
+    # check if using conda
     # Check if uv is installed and a uv environment is active
     if command -v uv >/dev/null 2>&1 && [ -n $VIRTUAL_ENV ]; then
         # Use Python from the uv venv
@@ -75,7 +104,7 @@ extract_python_exe() {
         # use kit python
         local python_exe=${ISAACLAB_PATH}/_isaac_sim/python.sh
 
-        if [ ! -f "${python_exe}" ]; then
+    if [ ! -f "${python_exe}" ]; then
             # note: we need to check system python for cases such as docker
             # inside docker, if user installed into system python, we need to use that
             # otherwise, use the python from the kit
@@ -145,6 +174,13 @@ setup_conda_env() {
     then
         echo "[ERROR] Conda could not be found. Please install conda and try again."
         exit 1
+    fi
+
+    # check if _isaac_sim symlink exists and isaacsim-rl is not installed via pip
+    if [ ! -L "${ISAACLAB_PATH}/_isaac_sim" ] && ! python -m pip list | grep -q 'isaacsim-rl'; then
+        echo -e "[WARNING] _isaac_sim symlink not found at ${ISAACLAB_PATH}/_isaac_sim"
+        echo -e "\tThis warning can be ignored if you plan to install Isaac Sim via pip."
+        echo -e "\tIf you are using a binary installation of Isaac Sim, please ensure the symlink is created before setting up the conda environment."
     fi
 
     # check if the environment exists
@@ -258,7 +294,7 @@ print_help () {
     echo -e "\t-f, --format         Run pre-commit to format the code and check lints."
     echo -e "\t-p, --python         Run the python executable provided by Isaac Sim or virtual environment (if active)."
     echo -e "\t-s, --sim            Run the simulator executable (isaac-sim.sh) provided by Isaac Sim."
-    echo -e "\t-t, --test           Run all python unittest tests."
+    echo -e "\t-t, --test           Run all python pytest tests."
     echo -e "\t-o, --docker         Run the docker container helper script (docker/container.sh)."
     echo -e "\t-v, --vscode         Generate the VSCode settings file from template."
     echo -e "\t-d, --docs           Build the documentation from source using sphinx."
@@ -267,6 +303,39 @@ print_help () {
     echo -e "\n" >&2
 }
 
+compare_torch_versions() {
+    local current_version="$1"
+    local target_version="$2"
+    
+    # Extract version numbers and CUDA suffixes
+    local current_base=$(echo "$current_version" | cut -d'+' -f1)
+    local current_cuda=$(echo "$current_version" | cut -d'+' -f2)
+    local target_base=$(echo "$target_version" | cut -d'+' -f1)
+    local target_cuda=$(echo "$target_version" | cut -d'+' -f2)
+    
+    echo "[INFO] Comparing torch versions:"
+    echo "  Current: $current_version (base: $current_base, cuda: $current_cuda)"
+    echo "  Target:  $target_version (base: $target_base, cuda: $target_cuda)"
+    
+    # Check if CUDA versions match
+    if [[ "$current_cuda" != "$target_cuda" ]]; then
+        echo "[ERROR] CUDA versions don't match: $current_cuda vs $target_cuda"
+        return 1
+    fi
+    
+    # Convert version strings to comparable format (remove dots)
+    local current_num=$(echo "$current_base" | sed 's/\.//g')
+    local target_num=$(echo "$target_base" | sed 's/\.//g')
+    
+    # Check if current version >= target version
+    if [[ $current_num -ge $target_num ]]; then
+        echo "[INFO] Version check passed: $current_base >= $target_base with matching CUDA $current_cuda"
+        return 0
+    else
+        echo "[ERROR] Version check failed: $current_base < $target_base"
+        return 1
+    fi
+}
 
 #==
 # Main
@@ -276,7 +345,7 @@ print_help () {
 if [ -z "$*" ]; then
     echo "[Error] No arguments provided." >&2;
     print_help
-    exit 1
+    exit 0
 fi
 
 # pass the arguments
@@ -284,9 +353,46 @@ while [[ $# -gt 0 ]]; do
     # read the key
     case "$1" in
         -i|--install)
+            # install system dependencies first
+            install_system_deps
             # install the python packages in IsaacLab/source directory
             echo "[INFO] Installing extensions inside the Isaac Lab repository..."
             python_exe=$(extract_python_exe)
+            # check if pytorch is installed and its version
+            # install pytorch with cuda 12.8 for blackwell support
+            if command -v uv >/dev/null 2>&1 && [ -n $VIRTUAL_ENV ]; then
+                if uv pip list 2>/dev/null | grep -q "torch"; then
+                    torch_version=$(uv pip show torch 2>/dev/null | grep "Version:" | awk '{print $2}')
+                    echo "[INFO] Found PyTorch version ${torch_version} installed."
+                    if ! compare_torch_versions "$torch_version" "2.7.0+cu128"; then
+                        echo "[INFO] Uninstalling PyTorch version ${torch_version}..."
+                        uv pip uninstall -y torch torchvision torchaudio
+                        echo "[INFO] Installing PyTorch 2.7.0 with CUDA 12.8 support..."
+                        uv pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
+                    else
+                        echo "[INFO] PyTorch 2.7.0 is already installed."
+                    fi
+                else
+                    echo "[INFO] Installing PyTorch 2.7.0 with CUDA 12.8 support..."
+                    uv pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
+                fi
+            else
+                if ${python_exe} -m pip list 2>/dev/null | grep -q "torch"; then
+                    torch_version=$(${python_exe} -m pip show torch 2>/dev/null | grep "Version:" | awk '{print $2}')
+                    echo "[INFO] Found PyTorch version ${torch_version} installed."
+                    if ! compare_torch_versions "$torch_version" "2.7.0+cu128"; then
+                        echo "[INFO] Uninstalling PyTorch version ${torch_version}..."
+                        ${python_exe} -m pip uninstall -y torch torchvision torchaudio
+                        echo "[INFO] Installing PyTorch 2.7.0 with CUDA 12.8 support..."
+                        ${python_exe} -m pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
+                    else
+                        echo "[INFO] PyTorch 2.7.0 is already installed."
+                    fi
+                else
+                    echo "[INFO] Installing PyTorch 2.7.0 with CUDA 12.8 support..."
+                    ${python_exe} -m pip install torch==2.7.0 torchvision==0.22.0 --index-url https://download.pytorch.org/whl/cu128
+                fi
+            fi
             # recursively look into directories and install them
             # this does not check dependencies between extensions
             export -f extract_python_exe
@@ -408,7 +514,7 @@ while [[ $# -gt 0 ]]; do
             # run the python provided by isaacsim
             python_exe=$(extract_python_exe)
             shift # past argument
-            ${python_exe} ${ISAACLAB_PATH}/tools/run_all_tests.py $@
+            ${python_exe} -m pytest ${ISAACLAB_PATH}/tools $@
             # exit neatly
             break
             ;;
@@ -449,7 +555,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         -h|--help)
             print_help
-            exit 1
+            exit 0
             ;;
         *) # unknown option
             echo "[Error] Invalid argument provided: $1"

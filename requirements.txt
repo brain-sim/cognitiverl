@@ -147,6 +147,7 @@ pillow==11.0.0
 pin==2.7.0
 pin-pink==3.1.0
 pip==23.0.1
+--extra-index-url=https://download.pytorch.org/whl/cu126 
 platformdirs==4.3.8
 prettytable==3.3.0
 proglog==0.1.11

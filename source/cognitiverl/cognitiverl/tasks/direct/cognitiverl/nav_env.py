@@ -529,9 +529,7 @@ class NavEnv(DirectRLEnv):
         # Get robot's orientation
         robot_quat = self.robot.data.root_quat_w  # (num_envs, 4) in (w,x,y,z)
         local_up = torch.tensor([0.0, 0.0, 1.0], device=self.device)
-        world_up_vector = math.quat_rotate(
-            robot_quat, local_up.repeat(self.num_envs, 1)
-        )
+        world_up_vector = math.quat_apply(robot_quat, local_up.repeat(self.num_envs, 1))
         world_up = torch.tensor([0.0, 0.0, 1.0], device=self.device)
         up_dot_product = torch.sum(world_up_vector * world_up, dim=-1)  # (num_envs,)
         up_angle = torch.abs(
