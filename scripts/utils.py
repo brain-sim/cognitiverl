@@ -3,7 +3,11 @@ import os
 import random
 from dataclasses import asdict, fields
 
-import jax
+try:
+    import jax
+except ImportError:
+    pass
+
 import numpy as np
 import torch
 import yaml
@@ -22,7 +26,6 @@ def seed_everything(
     np.random.seed(seed)
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
-
 
     if isinstance(envs, list):
         for env in envs:
