@@ -302,7 +302,7 @@ def test_environment():
     
     # Check virtual environment
     venv = os.environ.get('VIRTUAL_ENV', '')
-    if 'test_env' in venv:
+    if venv:
         print("✅ UV virtual environment active")
     else:
         print("❌ UV virtual environment not active")
