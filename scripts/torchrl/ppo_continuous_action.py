@@ -380,10 +380,10 @@ def main(args):
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps,) + envs.observation_space.shape).to(device)
     actions = torch.zeros((args.num_steps,) + envs.action_space.shape).to(device)
-    logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    logprobs = torch.zeros((args.num_steps, args.num_envs, 1)).to(device)
+    rewards = torch.zeros((args.num_steps, args.num_envs, 1)).to(device)
+    dones = torch.zeros((args.num_steps, args.num_envs, 1)).to(device).byte()
+    values = torch.zeros((args.num_steps, args.num_envs, 1)).to(device)
     mus = torch.zeros_like(actions)
     sigmas = torch.zeros_like(actions)
     # TRY NOT TO MODIFY: start the game
@@ -447,17 +447,17 @@ def main(args):
             start_time = time.time()
             for step in range(0, args.num_steps):
                 global_step += args.num_envs
-                obs[step] = next_obs
+                obs[step].copy_(next_obs)
 
                 # ALGO LOGIC: action logic
                 action, logprob, _, value, mu, sigma = (
                     inference_agent.get_action_and_value(next_obs)
                 )
-                values[step] = value.flatten()
-                actions[step] = action
-                logprobs[step] = logprob
-                mus[step] = mu
-                sigmas[step] = sigma
+                values[step].copy_(value.detach().view(-1, 1))
+                actions[step].copy_(action.detach())
+                logprobs[step].copy_(logprob.detach().view(-1, 1))
+                mus[step].copy_(mu.detach())
+                sigmas[step].copy_(sigma.detach())
 
                 # TRY NOT TO MODIFY BEGIN: execute the game and log data.
                 try:
@@ -470,8 +470,8 @@ def main(args):
                 #     reward += args.gamma * torch.squeeze(
                 #         value * infos["time_outs"].unsqueeze(1).to(device), 1
                 #     )
-                rewards[step] = reward.view(-1)
-                dones[step] = next_done
+                rewards[step].copy_(reward.detach().view(-1, 1))
+                dones[step].copy_(next_done.detach().view(-1, 1))
                 # TRY NOT TO MODIFY END:
 
                 # Capture detailed logging information
@@ -524,8 +524,9 @@ def main(args):
             step_pbar.set_description(f"speed (sps) : {step_speed:3.1f}")
 
             # bootstrap value if not done
-            next_value = inference_agent.get_value(next_obs).reshape(1, -1)
+            next_value = inference_agent.get_value(next_obs).detach()
             returns = torch.zeros_like(rewards).to(device)
+            advantages = torch.zeros_like(rewards).to(device)
 
             advantage = 0
             for t in reversed(range(args.num_steps)):
@@ -543,19 +544,23 @@ def main(args):
                 returns[t] = advantage + values[t]
             advantages = returns - values
 
+            if not args.norm_adv:
+                advantages = (advantages - advantages.mean()) / (
+                    advantages.std() + 1e-8
+                )
+
         # flatten the batch
-        b_obs = obs.reshape((-1,) + envs.observation_space.shape[1:])
-        b_logprobs = logprobs.reshape(-1)
-        b_actions = actions.reshape((-1,) + envs.action_space.shape[1:])
-        b_advantages = advantages.reshape(-1)
-        b_returns = returns.reshape(-1)
-        b_values = values.reshape(-1)
-        b_mus = mus.reshape((-1,) + envs.action_space.shape[1:])
-        b_sigmas = sigmas.reshape((-1,) + envs.action_space.shape[1:])
+        b_obs = obs.flatten(0, 1)
+        b_logprobs = logprobs.flatten(0, 1)
+        b_actions = actions.flatten(0, 1)
+        b_advantages = advantages.flatten(0, 1)
+        b_returns = returns.flatten(0, 1)
+        b_values = values.flatten(0, 1)
+        b_mus = mus.flatten(0, 1)
+        b_sigmas = sigmas.flatten(0, 1)
 
         # Optimizing the policy and value network
         b_inds = np.arange(args.batch_size)
-        clipfracs = []
         for epoch in range(args.update_epochs):
             np.random.shuffle(b_inds)
             for start in range(0, args.batch_size, args.minibatch_size):
@@ -565,25 +570,20 @@ def main(args):
                 _, newlogprob, entropy, newvalue, newmu, newsigma = (
                     agent.get_action_and_value(b_obs[mb_inds], b_actions[mb_inds])
                 )
-                logratio = newlogprob - b_logprobs[mb_inds]
-                ratio = logratio.exp()
+                ratio = torch.exp(newlogprob - torch.squeeze(b_logprobs[mb_inds]))
 
                 with torch.inference_mode():
-                    kl_mean = torch.mean(
-                        torch.sum(
-                            torch.log(newsigma / b_sigmas[mb_inds] + 1.0e-5)
-                            + (
-                                torch.square(b_sigmas[mb_inds])
-                                + torch.square(b_mus[mb_inds] - newmu)
-                            )
-                            / (2 * torch.square(newsigma))
-                            - 0.5,
-                            dim=-1,
+                    kl = torch.sum(
+                        torch.log(newsigma / b_sigmas[mb_inds] + 1.0e-5)
+                        + (
+                            torch.square(b_sigmas[mb_inds])
+                            + torch.square(b_mus[mb_inds] - newmu)
                         )
+                        / (2 * torch.square(newsigma))
+                        - 0.5,
+                        dim=-1,
                     )
-                    clipfracs += [
-                        ((ratio - 1.0).abs() > args.clip_coef).float().mean().item()
-                    ]
+                    kl_mean = kl.mean()
 
                 mb_advantages = b_advantages[mb_inds]
                 if args.norm_adv:
@@ -592,26 +592,24 @@ def main(args):
                     )
 
                 # Policy loss
-                pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(
+                pg_loss1 = -torch.squeeze(mb_advantages) * ratio
+                pg_loss2 = -torch.squeeze(mb_advantages) * torch.clamp(
                     ratio, 1 - args.clip_coef, 1 + args.clip_coef
                 )
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
                 # Value loss
-                newvalue = newvalue.view(-1)
                 if args.clip_vloss:
-                    v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
                     v_clipped = b_values[mb_inds] + torch.clamp(
                         newvalue - b_values[mb_inds],
                         -args.clip_coef,
                         args.clip_coef,
                     )
-                    v_loss_clipped = (v_clipped - b_returns[mb_inds]) ** 2
-                    v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
-                    v_loss = v_loss_max.mean()
+                    v_loss_unclipped = (newvalue - b_returns[mb_inds]).pow(2)
+                    v_loss_clipped = (v_clipped - b_returns[mb_inds]).pow(2)
+                    v_loss = torch.max(v_loss_unclipped, v_loss_clipped).mean()
                 else:
-                    v_loss = ((newvalue - b_returns[mb_inds]) ** 2).mean()
+                    v_loss = (b_returns[mb_inds] - newvalue).pow(2).mean()
 
                 entropy_loss = entropy.mean()
                 loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
@@ -624,7 +622,7 @@ def main(args):
                 optimizer.step()
 
             if args.target_kl is not None and args.adaptive_lr:
-                new_lr = update_learning_rate_adaptive(
+                update_learning_rate_adaptive(
                     optimizer,
                     kl_mean.item(),
                     args.target_kl,
@@ -647,16 +645,10 @@ def main(args):
                 {"learning_rate": optimizer.param_groups[0]["lr"]}, step=global_step
             )
 
-        # ADD THIS: Apply adaptive learning rate after the update epochs
-        if args.adaptive_lr:
-            new_lr = update_learning_rate_adaptive(
-                optimizer, approx_kl.item(), args.desired_kl, args.lr_multiplier
-            )
-            # Log the learning rate change
-            if global_step_burnin is not None and iteration % args.log_interval == 0:
-                wandb.log({"learning_rate": new_lr}, step=global_step)
-
-        y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
+        y_pred, y_true = (
+            b_values.cpu().float().numpy(),
+            b_returns.cpu().float().numpy(),
+        )
         var_y = np.var(y_true)
         explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 

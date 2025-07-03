@@ -22,7 +22,7 @@ total_checkpoint_size_removed=0
 
 # Arrays to store directories
 declare -a dirs_to_keep=()
-declare -a dirs_to_delete=()
+declare -a dirs_to_delete=()ast
 
 # Function to clean up old checkpoints in a directory
 cleanup_old_checkpoints() {
