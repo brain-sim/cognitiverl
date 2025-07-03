@@ -5,10 +5,58 @@
 
 set -e
 
-# Configuration
-UV_ENV_PATH="$HOME/.venv/test_env"
+# ============================================================================
+# ARGUMENT PARSING AND CONFIGURATION
+# ============================================================================
+
+# Parse command line arguments
+if [ $# -ge 1 ] && [ "$1" != "" ]; then
+    HOME_PATH="$1"
+    echo "🔧 Using custom HOME path: $HOME_PATH"
+else
+    HOME_PATH="$HOME"
+    echo "🔧 Using default HOME path: $HOME_PATH"
+fi
+
+if [ $# -ge 2 ] && [ "$2" != "" ]; then
+    UV_ENV_PATH="$2"
+    echo "🔧 Using custom UV environment path: $UV_ENV_PATH"
+else
+    UV_ENV_PATH="$HOME_PATH/.venv/test_env"
+    echo "🔧 Using default UV environment path: $UV_ENV_PATH"
+fi
+
+# Validate HOME_PATH exists
+if [ ! -d "$HOME_PATH" ]; then
+    echo "❌ Error: HOME path does not exist: $HOME_PATH"
+    exit 1
+fi
+
+# Print usage information
+print_usage() {
+    echo "Usage: $0 [HOME_PATH] [UV_ENV_PATH]"
+    echo ""
+    echo "Arguments:"
+    echo "  HOME_PATH    - Custom home directory path (default: \$HOME)"
+    echo "  UV_ENV_PATH  - Custom UV virtual environment path (default: \$HOME/.venv/test_env)"
+    echo ""
+    echo "Examples:"
+    echo "  $0                                    # Use defaults"
+    echo "  $0 /custom/home                       # Custom home, default UV env"
+    echo "  $0 /custom/home /custom/venv/my_env   # Custom home and UV env"
+    echo ""
+}
+
+# Show usage if --help is provided
+if [ "$1" == "--help" ] || [ "$1" == "-h" ]; then
+    print_usage
+    exit 0
+fi
 
 echo "=== Isaac Sim 5.0.0 UV Environment Setup ==="
+echo "🏠 Home Path: $HOME_PATH"
+echo "🐍 UV Environment Path: $UV_ENV_PATH"
+echo ""
 
 # ============================================================================
 # 1. LOAD ISAAC SIM ENVIRONMENT
@@ -17,39 +65,39 @@ echo "🔧 Loading Isaac Sim environment from ~/.bash_isaacsim..."
 
 # Function to create .bash_isaacsim if it doesn't exist
 create_bash_isaacsim() {
-    echo "🔧 Creating ~/.bash_isaacsim..."
-    cat > ~/.bash_isaacsim << 'EOF'
+    echo "🔧 Creating $HOME_PATH/.bash_isaacsim..."
+    cat > "$HOME_PATH/.bash_isaacsim" << EOF
 # ~/.bash_isaacsim - Isaac Sim 5.0.0 Environment Variables
 # This file is sourced by ~/.bashrc
 
 # Isaac Sim path configuration
-export ISAAC_SIM_PATH="$HOME/IsaacSim/_build/linux-x86_64/release"
+export ISAAC_SIM_PATH="$HOME_PATH/IsaacSim/_build/linux-x86_64/release"
 
 # Check if Isaac Sim build exists
-if [ ! -d "$ISAAC_SIM_PATH" ]; then
-    echo "⚠️  Warning: Isaac Sim build not found at $ISAAC_SIM_PATH"
+if [ ! -d "\$ISAAC_SIM_PATH" ]; then
+    echo "⚠️  Warning: Isaac Sim build not found at \$ISAAC_SIM_PATH"
     return 1
 fi
 
 # Core Isaac Sim environment variables
-export ISAAC_PATH="$ISAAC_SIM_PATH"
-export CARB_APP_PATH="$ISAAC_SIM_PATH/kit"
-export EXP_PATH="$ISAAC_SIM_PATH/apps"
+export ISAAC_PATH="\$ISAAC_SIM_PATH"
+export CARB_APP_PATH="\$ISAAC_SIM_PATH/kit"
+export EXP_PATH="\$ISAAC_SIM_PATH/apps"
 export RESOURCE_NAME="IsaacSim"
 
 # Library paths for Isaac Sim
-export LD_LIBRARY_PATH="$ISAAC_SIM_PATH:$ISAAC_SIM_PATH/kit:$ISAAC_SIM_PATH/kit/kernel/plugins:$ISAAC_SIM_PATH/kit/libs/iray:$ISAAC_SIM_PATH/kit/plugins:$ISAAC_SIM_PATH/kit/plugins/bindings-python:$ISAAC_SIM_PATH/kit/plugins/carb_gfx:$ISAAC_SIM_PATH/kit/plugins/rtx:$ISAAC_SIM_PATH/kit/plugins/gpu.foundation:${LD_LIBRARY_PATH:-}"
+export LD_LIBRARY_PATH="\$ISAAC_SIM_PATH:\$ISAAC_SIM_PATH/kit:\$ISAAC_SIM_PATH/kit/kernel/plugins:\$ISAAC_SIM_PATH/kit/libs/iray:\$ISAAC_SIM_PATH/kit/plugins:\$ISAAC_SIM_PATH/kit/plugins/bindings-python:\$ISAAC_SIM_PATH/kit/plugins/carb_gfx:\$ISAAC_SIM_PATH/kit/plugins/rtx:\$ISAAC_SIM_PATH/kit/plugins/gpu.foundation:\${LD_LIBRARY_PATH:-}"
 
 # WAR for missing libcarb.so
-export LD_PRELOAD="$ISAAC_SIM_PATH/kit/libcarb.so"
+export LD_PRELOAD="\$ISAAC_SIM_PATH/kit/libcarb.so"
 
 # Python paths for Isaac Sim modules
-export PYTHONPATH="$ISAAC_SIM_PATH/python_packages:$ISAAC_SIM_PATH/exts/isaacsim.simulation_app:$ISAAC_SIM_PATH/extsDeprecated/omni.isaac.kit:$ISAAC_SIM_PATH/kit/kernel/py:$ISAAC_SIM_PATH/kit/plugins/bindings-python:${PYTHONPATH:-}"
+export PYTHONPATH="\$ISAAC_SIM_PATH/python_packages:\$ISAAC_SIM_PATH/exts/isaacsim.simulation_app:\$ISAAC_SIM_PATH/extsDeprecated/omni.isaac.kit:\$ISAAC_SIM_PATH/kit/kernel/py:\$ISAAC_SIM_PATH/kit/plugins/bindings-python:\${PYTHONPATH:-}"
 
 # Isaac Sim aliases
-alias isaacsim_gui="cd $ISAAC_SIM_PATH && ./isaac-sim.sh"
-alias isaacsim_headless="cd $ISAAC_SIM_PATH && ./kit/python/bin/python3"
-alias isaacsim_version="cat $ISAAC_SIM_PATH/VERSION"
+alias isaacsim_gui="cd \$ISAAC_SIM_PATH && ./isaac-sim.sh"
+alias isaacsim_headless="cd \$ISAAC_SIM_PATH && ./kit/python/bin/python3"
+alias isaacsim_version="cat \$ISAAC_SIM_PATH/VERSION"
 
 # Quick Isaac Sim test function
 test_isaac_sim() {
@@ -63,57 +111,57 @@ except ImportError as e:
 }
 
 # Success message (only show if interactive shell)
-if [[ $- == *i* ]]; then
+if [[ \$- == *i* ]]; then
     echo "✅ Isaac Sim 5.0.0 environment loaded"
 fi
 EOF
-    echo "✅ ~/.bash_isaacsim created"
+    echo "✅ $HOME_PATH/.bash_isaacsim created"
 }
 
 # Function to add sourcing to .bashrc if not already present
 setup_bashrc_sourcing() {
-    if [ -f ~/.bashrc ]; then
+    if [ -f "$HOME_PATH/.bashrc" ]; then
         # Check if .bash_isaacsim is already sourced in .bashrc
-        if ! grep -q "bash_isaacsim" ~/.bashrc; then
-            echo "🔧 Adding .bash_isaacsim sourcing to ~/.bashrc..."
-            cat >> ~/.bashrc << 'EOF'
+        if ! grep -q "bash_isaacsim" "$HOME_PATH/.bashrc"; then
+            echo "🔧 Adding .bash_isaacsim sourcing to $HOME_PATH/.bashrc..."
+            cat >> "$HOME_PATH/.bashrc" << EOF
 
 # Isaac Sim 5.0.0 Environment
-if [ -f ~/.bash_isaacsim ]; then
-    source ~/.bash_isaacsim
+if [ -f "$HOME_PATH/.bash_isaacsim" ]; then
+    source "$HOME_PATH/.bash_isaacsim"
 fi
 EOF
-            echo "✅ ~/.bashrc updated to source .bash_isaacsim"
+            echo "✅ $HOME_PATH/.bashrc updated to source .bash_isaacsim"
         else
-            echo "✅ ~/.bashrc already sources .bash_isaacsim"
+            echo "✅ $HOME_PATH/.bashrc already sources .bash_isaacsim"
         fi
     else
-        echo "⚠️  ~/.bashrc not found, creating it..."
-        cat > ~/.bashrc << 'EOF'
+        echo "⚠️  $HOME_PATH/.bashrc not found, creating it..."
+        cat > "$HOME_PATH/.bashrc" << EOF
 # Isaac Sim 5.0.0 Environment
-if [ -f ~/.bash_isaacsim ]; then
-    source ~/.bash_isaacsim
+if [ -f "$HOME_PATH/.bash_isaacsim" ]; then
+    source "$HOME_PATH/.bash_isaacsim"
 fi
 EOF
-        echo "✅ ~/.bashrc created with .bash_isaacsim sourcing"
+        echo "✅ $HOME_PATH/.bashrc created with .bash_isaacsim sourcing"
     fi
 }
 
 # Check if .bash_isaacsim exists, create if not
-if [ ! -f ~/.bash_isaacsim ]; then
-    echo "📝 ~/.bash_isaacsim not found, creating it..."
+if [ ! -f "$HOME_PATH/.bash_isaacsim" ]; then
+    echo "📝 $HOME_PATH/.bash_isaacsim not found, creating it..."
     create_bash_isaacsim
     setup_bashrc_sourcing
 else
-    echo "✅ ~/.bash_isaacsim already exists"
+    echo "✅ $HOME_PATH/.bash_isaacsim already exists"
 fi
 
 # Source the Isaac Sim environment
-if [ -f ~/.bash_isaacsim ]; then
-    source ~/.bash_isaacsim
+if [ -f "$HOME_PATH/.bash_isaacsim" ]; then
+    source "$HOME_PATH/.bash_isaacsim"
     echo "✅ Isaac Sim environment loaded"
 else
-    echo "❌ Error: Failed to create ~/.bash_isaacsim"
+    echo "❌ Error: Failed to create $HOME_PATH/.bash_isaacsim"
     exit 1
 fi
 
@@ -125,6 +173,7 @@ echo "🔧 Activating UV virtual environment..."
 # Check if UV environment exists
 if [ ! -d "$UV_ENV_PATH" ]; then
     echo "❌ Error: UV environment not found at $UV_ENV_PATH"
+    echo "💡 Create it with: uv venv $UV_ENV_PATH"
     exit 1
 fi
 
@@ -159,43 +208,43 @@ echo "✅ Isaac Sim paths configured for UV environment"
 echo "🔧 Creating Isaac Sim wrapper for UV environment..."
 
 create_isaacsim_wrapper() {
-    cat > "$VIRTUAL_ENV/bin/isaacsim" << 'EOF'
+    cat > "$VIRTUAL_ENV/bin/isaacsim" << EOF
 #!/bin/bash
 # Isaac Sim 5.0.0 launcher with UV environment support
 
 # Source Isaac Sim environment
-if [ -f ~/.bash_isaacsim ]; then
-    source ~/.bash_isaacsim >/dev/null 2>&1
+if [ -f "$HOME_PATH/.bash_isaacsim" ]; then
+    source "$HOME_PATH/.bash_isaacsim" >/dev/null 2>&1
 fi
 
 # Ensure we're in the correct UV environment
-if [[ "$VIRTUAL_ENV" != *"test_env"* ]]; then
-    echo "❌ Error: Not in test_env virtual environment"
-    echo "Please run: source $HOME/.venv/test_env/bin/activate"
+if [[ "\$VIRTUAL_ENV" != *"$(basename "$UV_ENV_PATH")"* ]]; then
+    echo "❌ Error: Not in $(basename "$UV_ENV_PATH") virtual environment"
+    echo "Please run: source $UV_ENV_PATH/bin/activate"
     exit 1
 fi
 
 # Parse arguments and launch Isaac Sim
-case "${1:-gui}" in
+case "\${1:-gui}" in
     "gui"|"")
         echo "🚀 Launching Isaac Sim 5.0.0 GUI..."
-        cd "$ISAAC_SIM_PATH"
-        exec "$ISAAC_SIM_PATH/isaac-sim.sh" "${@:2}"
+        cd "\$ISAAC_SIM_PATH"
+        exec "\$ISAAC_SIM_PATH/isaac-sim.sh" "\${@:2}"
         ;;
     "--headless")
         echo "🚀 Launching Isaac Sim 5.0.0 headless with UV environment..."
-        cd "$ISAAC_SIM_PATH"
-        exec "$VIRTUAL_ENV/bin/python" "${@:2}"
+        cd "\$ISAAC_SIM_PATH"
+        exec "\$VIRTUAL_ENV/bin/python" "\${@:2}"
         ;;
     "--version")
-        echo "Isaac Sim $(cat $ISAAC_SIM_PATH/VERSION)"
-        echo "UV Environment: $VIRTUAL_ENV"
-        echo "Python: $(python --version)"
+        echo "Isaac Sim \$(cat \$ISAAC_SIM_PATH/VERSION)"
+        echo "UV Environment: \$VIRTUAL_ENV"
+        echo "Python: \$(python --version)"
         ;;
     *)
         echo "🚀 Launching Isaac Sim with custom arguments..."
-        cd "$ISAAC_SIM_PATH"
-        exec "$ISAAC_SIM_PATH/isaac-sim.sh" "$@"
+        cd "\$ISAAC_SIM_PATH"
+        exec "\$ISAAC_SIM_PATH/isaac-sim.sh" "\$@"
         ;;
 esac
 EOF
@@ -211,7 +260,7 @@ echo "✅ Isaac Sim wrapper created"
 echo "🔧 Creating Isaac Sim test script..."
 
 create_isaac_sim_test() {
-    cat > "$VIRTUAL_ENV/bin/test_isaac_sim.py" << 'EOF'
+    cat > "$VIRTUAL_ENV/bin/test_isaac_sim.py" << EOF
 #!/usr/bin/env python3
 """Test Isaac Sim 5.0.0 import and basic functionality with UV environment"""
 
@@ -220,7 +269,7 @@ import os
 import subprocess
 
 # Isaac Sim configuration
-ISAAC_SIM_PATH = "$HOME/IsaacSim/_build/linux-x86_64/release"
+ISAAC_SIM_PATH = "$HOME_PATH/IsaacSim/_build/linux-x86_64/release"
 
 # Set required environment variables
 os.environ['ISAAC_PATH'] = ISAAC_SIM_PATH
