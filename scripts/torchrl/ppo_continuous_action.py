@@ -18,7 +18,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from isaaclab.utils import configclass
 from models import CNNPPOAgent, MLPPPOAgent
 from utils import load_args, print_dict, seed_everything, update_learning_rate_adaptive
-from wrappers import IsaacLabVecEnvWrapper
 
 
 @configclass
@@ -45,7 +44,7 @@ class EnvArgs:
     """run training with multiple GPUs or nodes"""
     headless: bool = False
     """run training in headless mode"""
-    enable_cameras: bool = False
+    enable_cameras: bool = True # enable cameras by default to use while training
     """enable cameras to record sensor inputs."""
 
     renderer: str = "PathTracing"
