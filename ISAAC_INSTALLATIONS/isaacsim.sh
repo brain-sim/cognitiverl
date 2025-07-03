@@ -6,7 +6,7 @@
 set -e
 
 # Configuration
-UV_ENV_PATH="/home/chandramouli/.venv/test_env"
+UV_ENV_PATH="$HOME/.venv/test_env"
 
 echo "=== Isaac Sim 5.0.0 UV Environment Setup ==="
 
@@ -23,7 +23,7 @@ create_bash_isaacsim() {
 # This file is sourced by ~/.bashrc
 
 # Isaac Sim path configuration
-export ISAAC_SIM_PATH="/home/chandramouli/IsaacSim/_build/linux-x86_64/release"
+export ISAAC_SIM_PATH="$HOME/IsaacSim/_build/linux-x86_64/release"
 
 # Check if Isaac Sim build exists
 if [ ! -d "$ISAAC_SIM_PATH" ]; then
@@ -171,7 +171,7 @@ fi
 # Ensure we're in the correct UV environment
 if [[ "$VIRTUAL_ENV" != *"test_env"* ]]; then
     echo "❌ Error: Not in test_env virtual environment"
-    echo "Please run: source /home/chandramouli/.venv/test_env/bin/activate"
+    echo "Please run: source $HOME/.venv/test_env/bin/activate"
     exit 1
 fi
 
@@ -220,7 +220,7 @@ import os
 import subprocess
 
 # Isaac Sim configuration
-ISAAC_SIM_PATH = "/home/chandramouli/IsaacSim/_build/linux-x86_64/release"
+ISAAC_SIM_PATH = "$HOME/IsaacSim/_build/linux-x86_64/release"
 
 # Set required environment variables
 os.environ['ISAAC_PATH'] = ISAAC_SIM_PATH
