@@ -208,6 +208,7 @@ def make_isaaclab_env(
 ):
     import isaaclab_tasks  # noqa: F401
     from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+    from wrappers import IsaacLabVecEnvWrapper
 
     import cognitiverl.tasks  # noqa: F401
 
