@@ -302,7 +302,7 @@ def test_environment():
     
     # Check virtual environment
     venv = os.environ.get('VIRTUAL_ENV', '')
-    if 'test_env' in venv:
+    if venv:
         print("✅ UV virtual environment active")
     else:
         print("❌ UV virtual environment not active")
@@ -449,3 +449,9 @@ if [ $# -eq 0 ]; then
     echo "  test_isaac_sim.py     # Run tests"
     echo "  python -c \"from isaacsim import SimulationApp\"  # Test import"
 fi 
+
+# Deactivate and reactivate the UV environment to ensure all changes take effect
+echo "🔄 Refreshing UV environment..."
+deactivate
+source "$VIRTUAL_ENV/bin/activate"
+echo "✅ UV environment refreshed"
