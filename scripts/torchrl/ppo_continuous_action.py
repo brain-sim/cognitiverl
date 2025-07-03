@@ -44,7 +44,7 @@ class EnvArgs:
     """run training with multiple GPUs or nodes"""
     headless: bool = False
     """run training in headless mode"""
-    enable_cameras: bool = True # enable cameras by default to use while training
+    enable_cameras: bool = True  # enable cameras by default to use while training
     """enable cameras to record sensor inputs."""
 
     renderer: str = "PathTracing"
@@ -830,7 +830,10 @@ if __name__ == "__main__":
             os.environ["WANDB_MODE"] = "dryrun"
         main(args)
     except Exception as e:
+        import traceback
+
         print("Exception:", e)
+        print(traceback.format_exc())
     finally:
         simulation_app.close()
 
