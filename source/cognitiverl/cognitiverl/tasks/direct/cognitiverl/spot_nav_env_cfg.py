@@ -22,7 +22,7 @@ class SpotNavEnvCfg(NavEnvCfg):
     observation_space = (
         img_size[0] * img_size[1] * img_size[2] + 4
     )  # Look at _get_state_obs() in the *_env.py file
-    policy_file_path = "spot_policy_test_v2.pt"
+    policy_file_path = "spot_policy_custom.pt"
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 200, render_interval=render_interval
     )  # dt=1/250

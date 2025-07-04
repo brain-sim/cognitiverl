@@ -441,17 +441,10 @@ else
     echo "Isaac Sim may still work for basic usage."
 fi
 
-# Don't exec, stay in current shell
-if [ $# -eq 0 ]; then
-    echo ""
-    echo "Environment ready! Try:"
-    echo "  isaacsim              # Launch GUI"
-    echo "  test_isaac_sim.py     # Run tests"
-    echo "  python -c \"from isaacsim import SimulationApp\"  # Test import"
-fi 
-
 # Deactivate and reactivate the UV environment to ensure all changes take effect
 echo "🔄 Refreshing UV environment..."
-deactivate
+if [ -n "$VIRTUAL_ENV" ] && command -v deactivate >/dev/null 2>&1; then
+    deactivate
+fi
 source "$VIRTUAL_ENV/bin/activate"
 echo "✅ UV environment refreshed"
