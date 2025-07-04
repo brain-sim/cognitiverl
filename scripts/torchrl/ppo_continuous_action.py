@@ -47,10 +47,10 @@ class EnvArgs:
     enable_cameras: bool = True  # enable cameras by default to use while training
     """enable cameras to record sensor inputs."""
 
-    renderer: str = "PathTracing"
-    """Renderer to use."""
-    samples_per_pixel_per_frame: int = 1
-    """Number of samples per pixel per frame."""
+    # renderer: str = "PathTracing"
+    # """Renderer to use."""
+    # samples_per_pixel_per_frame: int = 1
+    # """Number of samples per pixel per frame."""
 
 
 @configclass
