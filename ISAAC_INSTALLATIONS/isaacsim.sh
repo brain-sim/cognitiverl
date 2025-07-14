@@ -99,11 +99,6 @@ except ImportError as e:
     print(f'❌ Isaac Sim import failed: {e}')
 "
 }
-
-# Success message (only show if interactive shell)
-if [[ \$- == *i* ]]; then
-    echo "✅ Isaac Sim 5.0.0 environment loaded"
-fi
 EOF
     echo "✅ $HOME/.bash_isaacsim created"
 }
