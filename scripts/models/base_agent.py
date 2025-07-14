@@ -76,7 +76,13 @@ class BaseAgent(nn.Module, ABC):
         # Build hidden layers
         for i, hidden_dim in enumerate(hidden_dims):
             layer_input_dim = input_dim if i == 0 else hidden_dims[i - 1]
-            layers.extend([nn.Linear(layer_input_dim, hidden_dim), activation()])
+            layers.extend(
+                [
+                    nn.Linear(layer_input_dim, hidden_dim),
+                    nn.LayerNorm(hidden_dim),
+                    activation(),
+                ]
+            )
 
         # Output layer
         final_input_dim = hidden_dims[-1] if hidden_dims else input_dim
