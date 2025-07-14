@@ -52,7 +52,12 @@ ln -s ../IsaacSim/_build/linux-x86_64/release _isaac_sim # This is a symbolic li
 ./isaacsim.sh $HOME/IsaacSim
 ```
 
-9. Now go to ISAAC_INSTALLATIONS. 
+9. This is a bash script that sets up the IsaacSim environment and refresh the UV environment
+```bash
+source ~/.bash_isaacsim.
+```
+
+10. Now go to ISAAC_INSTALLATIONS. 
 **🚨 Note:** Do **not** install IsaacLab using the official instructions or set up a conda environment. Use only the provided `isaaclab.sh` script in this repository to install and set up IsaacLab in your UV environment.
 Install and setup the IsaacLab in your UV environment
 
