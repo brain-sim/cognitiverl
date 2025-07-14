@@ -58,7 +58,7 @@ source ~/.bash_isaacsim.
 ```
 
 10. Now go to ISAAC_INSTALLATIONS. 
-**🚨 Note:** Do **not** install IsaacLab using the official instructions or set up a conda environment. Use only the provided `isaaclab.sh` script in this repository to install and set up IsaacLab in your UV environment.
+**🚨🚨🚨🚨🚨 Note:** Do **not** install IsaacLab using the official instructions or set up a conda environment. Use only the provided `isaaclab.sh` script in this repository to install and set up IsaacLab in your UV environment.
 Install and setup the IsaacLab in your UV environment
 
 ```bash

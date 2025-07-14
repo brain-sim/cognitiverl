@@ -52,45 +52,15 @@ ln -s ../IsaacSim/_build/linux-x86_64/release _isaac_sim # This is a symbolic li
 ./isaacsim.sh $HOME/IsaacSim
 ```
 
-9. Now go to ISAAC_INSTALLATIONS and setup the IsaacLab in your UV environment.
+9. This is a bash script that sets up the IsaacSim environment and refresh the UV environment
 ```bash
-./isaaclab.sh $HOME/IsaacLab
+source ~/.bash_isaacsim.
 ```
 
-
-Environment Setup - IsaacSim 4.5.0
-
-# Install and setup python packet manager (uv) using the following steps:
-
-1. Install and setup the uv environment on the server machine.
-```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
-```
-
-2. Setup a virtual environment using the following command:
-```bash
-uv venv $HOME/isaaclab_env --python 3.10
-```
-
-3. Activate the virtual environment using the following command:
-```bash
-source $HOME/isaaclab_env/bin/activate
-```
-
-4. Install the packages using the requirements.txt file.
-```bash
-uv pip install -r requirements.txt
-```
-or If you are running on the server machine, you can use the requirements_machine.txt file to install the packages.
-```bash
-uv pip install -r requirements_machine.txt
-```
-
-5. Test if both jax and pytorch are installed correctly using the following command:
-Check for gpu availability in both jax and pytorch:
+10. Now go to ISAAC_INSTALLATIONS. 
+**🚨🚨🚨🚨🚨 Note:** Do **not** install IsaacLab using the official instructions or set up a conda environment. Use only the provided `isaaclab.sh` script in this repository to install and set up IsaacLab in your UV environment.
+Install and setup the IsaacLab in your UV environment
 
 ```bash
-```python
-python -c "import jax; import torch; print(f'JAX devices: {jax.devices()}'); print(f'PyTorch CUDA available: {torch.cuda.is_available()}'); print(f'PyTorch device count: {torch.cuda.device_count()}'); print(f'Pytorch and JAX have been properly installed and GPU devices are properly configured')"
-```
+./isaaclab.sh $HOME/IsaacLab --install
 ```
