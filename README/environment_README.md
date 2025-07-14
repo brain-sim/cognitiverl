@@ -9,12 +9,12 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 2. Setup a virtual environment using the following command:
 ```bash
-uv venv $HOME/isaaclab_env --python 3.11
+uv venv $HOME/isaaclab_env --python 3.11 # Can change the name of the virtual environment to anything you want.
 ```
 
 3. Activate the virtual environment using the following command:
 ```bash
-source $HOME/isaaclab_env/bin/activate
+source $HOME/isaaclab_env/bin/activate # Can change the name of the virtual environment to anything you want.
 ```
 
 4. Install the packages using the requirements.txt file.
