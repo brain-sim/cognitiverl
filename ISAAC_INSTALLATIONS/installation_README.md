@@ -54,7 +54,7 @@ ln -s ../IsaacSim/_build/linux-x86_64/release _isaac_sim # This is a symbolic li
 
 9. This is a bash script that sets up the IsaacSim environment and refresh the UV environment
 ```bash
-source ~/.bash_isaacsim.
+source ~/.bash_isaacsim
 ```
 
 10. Now go to ISAAC_INSTALLATIONS. 
