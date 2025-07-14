@@ -54,7 +54,7 @@ ln -s ../IsaacSim/_build/linux-x86_64/release _isaac_sim # This is a symbolic li
 
 9. Now go to ISAAC_INSTALLATIONS and setup the IsaacLab in your UV environment.
 ```bash
-./isaaclab.sh $HOME/IsaacLab
+./isaaclab.sh $HOME/IsaacLab --install
 ```
 
 
