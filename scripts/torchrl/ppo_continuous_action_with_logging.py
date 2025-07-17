@@ -324,8 +324,6 @@ def main(args):
             args.video_length
         )
 
-    # Set environment variable to ignore checkpoint files from being uploaded
-    os.environ["WANDB_IGNORE_GLOBS"] = "checkpoints/*,*.pt"
 
     # initialize wandb run
     run = wandb.init(
@@ -862,8 +860,6 @@ def main(args):
                 best_step = global_step
                 best_ckpt = ckpt_path
 
-            # Also upload to wandb with proper base_path to preserve directory structure
-            wandb.save(ckpt_path, base_path=log_dir)
 
         avg_returns, ep_ret, max_ep_ret, max_step_reward = 0.0, 0.0, 0.0, 0.0
         # Update iteration progress bar
