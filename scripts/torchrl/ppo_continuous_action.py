@@ -233,12 +233,12 @@ def make_isaaclab_env(
         env = IsaacLabVecEnvWrapper(
             env
         )  # was earlier set to clip_actions=1.0 causing issues.
-
         if capture_video and log_dir is not None:
+            os.makedirs(os.path.join(log_dir, "videos", "play"), exist_ok=True)
             video_kwargs = {
                 "video_folder": os.path.join(log_dir, "videos", "play"),
-                "step_trigger": lambda step: step == 0,
-                "video_length": video_length,
+                "step_trigger": lambda step: step % 1000 == 0,
+                "video_length": kwargs.get("video_length", 500),
                 "disable_logger": True,
             }
             print_dict(video_kwargs, nesting=4)
@@ -277,7 +277,7 @@ def main(args):
     args.num_iterations = args.total_timesteps // args.batch_size
 
     # Set environment variable to ignore checkpoint files from being uploaded
-    os.environ["WANDB_IGNORE_GLOBS"] = "checkpoints/*,*.pt"
+    os.environ["WANDB_IGNORE_GLOBS"] = "*.pt,*.mp4"
 
     # initialize wandb run
     run = wandb.init(
@@ -308,6 +308,7 @@ def main(args):
     device = (
         torch.device(args.device) if torch.cuda.is_available() else torch.device("cpu")
     )
+    
 
     # env setup
     envs = make_isaaclab_env(
@@ -316,6 +317,8 @@ def main(args):
         args.num_envs,
         args.capture_video,
         args.disable_fabric,
+        log_dir=run_dir,
+        video_length=args.video_length,
         max_total_steps=args.total_timesteps,
     )()
     args.img_size = envs.unwrapped.cfg.img_size
