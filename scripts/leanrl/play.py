@@ -1,6 +1,5 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppo_continuous_actionpy
 import os
-import sys
 from dataclasses import asdict
 
 import gymnasium as gym
@@ -8,13 +7,12 @@ import imageio  # Added for video writing
 import numpy as np
 import torch
 import tqdm
-import wandb
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from isaaclab.utils import configclass
-from models import CNNPPOAgent
 from termcolor import colored
-from utils import load_args, print_dict  # add load_args import
+
+import wandb
+from scripts.models import CNNPPOAgent
+from scripts.utils import load_args, make_isaaclab_env, print_dict
 
 ### TODO : Make play callable while training and after training.
 ### Solution - Use ManagerBasedRL or multi threading or multiprocessing to run train and eval.
@@ -97,51 +95,6 @@ try:
 
 except ImportError:
     raise ImportError("Isaac Lab is not installed. Please install it first.")
-
-
-def make_isaaclab_env(
-    task,
-    device,
-    num_envs,
-    capture_video,
-    disable_fabric,
-    log_dir=None,
-    video_length=200,
-    *args,
-    **kwargs,
-):
-    import isaaclab_tasks  # noqa: F401
-    from isaaclab_rl.torchrl import (
-        IsaacLabVecEnvWrapper,
-    )
-    from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
-
-    import cognitiverl.tasks  # noqa: F401
-
-    def thunk():
-        cfg = parse_env_cfg(
-            task, device, num_envs=num_envs, use_fabric=not disable_fabric
-        )
-        env = gym.make(
-            task,
-            cfg=cfg,
-            render_mode="rgb_array"
-            if (capture_video and log_dir is not None)
-            else None,
-            play_mode=True,
-        )
-        if capture_video and log_dir is not None:
-            video_kwargs = {
-                "video_folder": os.path.join(log_dir, "videos", "play"),
-                "step_trigger": lambda step: step == 0,
-                "video_length": video_length,
-                "disable_logger": True,
-            }
-            env = gym.wrappers.RecordVideo(env, **video_kwargs)
-        env = IsaacLabVecEnvWrapper(env)
-        return env
-
-    return thunk
 
 
 def main(args):

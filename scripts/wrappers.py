@@ -89,8 +89,9 @@ class IsaacLabVecEnvWrapper(Wrapper):
 
     def __init__(
         self,
-        env: ManagerBasedRLEnv | DirectRLEnv,
+        env,
         clip_actions: float | None = None,
+        action_bounds: float | None = None,
         use_jax: bool | False = False,
     ):
         super().__init__(env)
@@ -116,6 +117,7 @@ class IsaacLabVecEnvWrapper(Wrapper):
             )
         # initialize the wrapper
         self.clip_actions = clip_actions
+        self.action_bounds = action_bounds
         self.use_jax = use_jax
         print(f"Using JAX: {self.use_jax}")
 
@@ -152,6 +154,7 @@ class IsaacLabVecEnvWrapper(Wrapper):
             )
         else:
             self.num_privileged_obs = 0
+        self.max_episode_steps = self.unwrapped.max_episode_length
 
         # modify the action space to the clip range
         self._modify_action_space()
@@ -247,9 +250,14 @@ class IsaacLabVecEnvWrapper(Wrapper):
     def seed(self, seed: int = -1) -> int:  # noqa: D102
         return self.unwrapped.seed(seed)
 
-    def reset(self) -> tuple[torch.Tensor, dict]:  # noqa: D102
+    def reset(self, random_start_init: bool = False) -> tuple[torch.Tensor, dict]:  # noqa: D102
         # reset the environment
         obs_dict, _ = self.env.reset()
+        # NOTE: decorrelate episode horizons like RSL‑RL
+        if random_start_init:
+            self.episode_length_buf = torch.randint_like(
+                self.episode_length_buf, high=int(self.max_episode_steps)
+            )
         # return observations
         if self.use_jax:
             obs_dict = convert_dict_to_jax(obs_dict)
@@ -269,6 +277,8 @@ class IsaacLabVecEnvWrapper(Wrapper):
         # clip actions
         if self.clip_actions is not None:
             actions = torch.clamp(actions, -self.clip_actions, self.clip_actions)
+        if self.action_bounds is not None:
+            actions = torch.clamp(actions, -1.0, 1.0) * self.action_bounds
         # record step information
         obs_dict, rew, terminated, truncated, extras = self.env.step(actions)
         # compute dones for compatibility with RSL-RL
@@ -285,11 +295,13 @@ class IsaacLabVecEnvWrapper(Wrapper):
             extras = convert_dict_to_jax(extras)
 
         obs = obs_dict["policy"].nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
+        # rew = rew.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
         extras["observations"] = obs_dict
         # move time out information to the extras dict
         # this is only needed for infinite horizon tasks
         if not self.unwrapped.cfg.is_finite_horizon:
             extras["time_outs"] = truncated
+            extras["terminations"] = terminated
 
         # return the step information
         return obs, rew, dones, extras

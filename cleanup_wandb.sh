@@ -2,9 +2,9 @@
 
 # Script to clean up wandb directories without checkpoints or videos
 # Also keeps only the last 10 checkpoints in directories that have them
-WANDB_DIR="/home/user/cognitiverl/wandb"
+WANDB_DIR="${PWD}/wandb"
 DRY_RUN=false  # Set to false to actually delete
-MAX_CHECKPOINTS=10  # Maximum number of checkpoints to keep per directory
+MAX_CHECKPOINTS=100  # Maximum number of checkpoints to keep per directory
 
 echo "🔍 Scanning wandb directories for cleanup..."
 echo "📁 Directory: $WANDB_DIR"

@@ -144,11 +144,8 @@ def make_env(task, seed, idx, capture_video, run_name):
 
 def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **args):
     import isaaclab_tasks  # noqa: F401
-    from isaaclab_rl.torchrl import (
-        IsaacLabRecordEpisodeStatistics,
-        IsaacLabVecEnvWrapper,
-    )
     from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
+    from wrappers import IsaacLabVecEnvWrapper
 
     import cognitiverl.tasks  # noqa: F401
 
@@ -161,8 +158,7 @@ def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **a
             cfg=cfg,
             render_mode="rgb_array" if capture_video else None,
         )
-        env = IsaacLabRecordEpisodeStatistics(env)
-        env = IsaacLabVecEnvWrapper(env, clip_actions=1.0)
+        env = IsaacLabVecEnvWrapper(env)
         return env
 
     return thunk
@@ -235,7 +231,7 @@ def main(args):
         config=vars(args),
         save_code=True,
     )
-
+    os.environ["WANDB_IGNORE_GLOBS"] = "checkpoints/*,*.pt"
     device = (
         torch.device(args.device) if torch.cuda.is_available() else torch.device("cpu")
     )

@@ -126,6 +126,7 @@ class SpotPolicyController:
         actions = self(obs)
         return actions
 
+
 class SpotRoughPolicyController(SpotPolicyController):
     def __init__(self, policy_file_path: str):
         super().__init__(policy_file_path)
@@ -156,7 +157,9 @@ class SpotRoughPolicyController(SpotPolicyController):
             obs: [num_envs, 48] torch.Tensor
         """
         obs = torch.zeros(
-            (base_lin_vel.shape[0], 48), device=base_lin_vel.device, dtype=base_lin_vel.dtype
+            (base_lin_vel.shape[0], 48),
+            device=base_lin_vel.device,
+            dtype=base_lin_vel.dtype,
         )
         obs[:, 0:3] = base_lin_vel
         obs[:, 3:6] = base_ang_vel
@@ -211,6 +214,7 @@ class SpotRoughPolicyController(SpotPolicyController):
         actions = self(obs)
         return actions
 
+
 class SpotRoughWithHeightPolicyController(SpotPolicyController):
     def __init__(self, policy_file_path: str):
         super().__init__(policy_file_path)
@@ -242,7 +246,9 @@ class SpotRoughWithHeightPolicyController(SpotPolicyController):
             obs: [num_envs, 48] torch.Tensor
         """
         obs = torch.zeros(
-            (base_lin_vel.shape[0], 57), device=base_lin_vel.device, dtype=base_lin_vel.dtype
+            (base_lin_vel.shape[0], 57),
+            device=base_lin_vel.device,
+            dtype=base_lin_vel.dtype,
         )
         obs[:, 0:3] = base_lin_vel
         obs[:, 3:6] = base_ang_vel

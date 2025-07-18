@@ -1,6 +1,5 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppo_continuous_actionpy
 import os
-import sys
 import time
 from dataclasses import asdict
 
@@ -11,13 +10,18 @@ import torch.nn as nn
 import torch.optim as optim
 import torchvision
 import tqdm
-import wandb
+from isaaclab.utils import configclass
 from termcolor import colored
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from isaaclab.utils import configclass
-from models import CNNPPOAgent, MLPPPOAgent
-from utils import load_args, print_dict, seed_everything, update_learning_rate_adaptive
+import wandb
+from scripts.models import CNNPPOAgent, MLPPPOAgent
+from scripts.utils import (
+    load_args,
+    make_isaaclab_env,
+    print_dict,
+    seed_everything,
+    update_learning_rate_adaptive,
+)
 
 
 @configclass
@@ -30,7 +34,7 @@ class EnvArgs:
     """the number of parallel environments to simulate"""
     seed: int = 1
     """seed of the environment"""
-    capture_video: bool = True
+    capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
     video: bool = False
     """record videos during training"""
@@ -173,81 +177,6 @@ except ImportError:
     raise ImportError("Isaac Lab is not installed. Please install it first.")
 
 
-def make_env(env_id, idx, capture_video, run_name, gamma):
-    def thunk():
-        if capture_video and idx == 0:
-            env = gym.make(env_id, render_mode="rgb_array")
-            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
-        else:
-            env = gym.make(env_id)
-        env = gym.wrappers.FlattenObservation(
-            env
-        )  # deal with dm_control's Dict observation space
-        env = gym.wrappers.RecordEpisodeStatistics(env)
-        env = gym.wrappers.ClipAction(env)
-        env = gym.wrappers.NormalizeObservation(env)
-        env = gym.wrappers.TransformObservation(env, lambda obs: np.clip(obs, -10, 10))
-        env = gym.wrappers.NormalizeReward(env, gamma=gamma)
-        env = gym.wrappers.TransformReward(env, lambda reward: np.clip(reward, -10, 10))
-        return env
-
-    return thunk
-
-
-def make_isaaclab_env(
-    task,
-    device,
-    num_envs,
-    capture_video,
-    disable_fabric,
-    log_dir=None,
-    video_length=200,
-    max_total_steps=None,
-    *args,
-    **kwargs,
-):
-    import isaaclab_tasks  # noqa: F401
-    from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
-    from wrappers import IsaacLabVecEnvWrapper
-
-    import cognitiverl.tasks  # noqa: F401
-
-    def thunk():
-        cfg = parse_env_cfg(
-            task, device, num_envs=num_envs, use_fabric=not disable_fabric
-        )
-        env = gym.make(
-            task,
-            cfg=cfg,
-            render_mode="rgb_array"
-            if (capture_video and log_dir is not None)
-            else None,
-            max_total_steps=max_total_steps,
-        )
-        print_dict(
-            {"max_episode_steps": env.unwrapped.max_episode_length},
-            nesting=4,
-            color="green",
-            attrs=["bold"],
-        )
-        env = IsaacLabVecEnvWrapper(
-            env
-        )  # was earlier set to clip_actions=1.0 causing issues.
-        if capture_video and log_dir is not None:
-            os.makedirs(os.path.join(log_dir, "videos", "play"), exist_ok=True)
-            video_kwargs = {
-                "video_folder": os.path.join(log_dir, "videos", "play"),
-                "step_trigger": lambda step: step % 1000 == 0,
-                "video_length": kwargs.get("video_length", 500),
-                "disable_logger": True,
-            }
-            print_dict(video_kwargs, nesting=4)
-            env = gym.wrappers.RecordVideo(env, **video_kwargs)
-        return env
-
-    return thunk
-
-
 # Add EMA helper functions after imports
 import copy
 
@@ -308,10 +237,10 @@ def main(args):
     device = (
         torch.device(args.device) if torch.cuda.is_available() else torch.device("cpu")
     )
-    
 
     # env setup
     envs = make_isaaclab_env(
+        args.seed,
         args.task,
         args.device,
         args.num_envs,
@@ -321,11 +250,12 @@ def main(args):
         video_length=args.video_length,
         max_total_steps=args.total_timesteps,
     )()
+    if args.capture_video:
+        envs.unwrapped.sim.set_camera_view(eye=[0, 0, 100], target=[0, 0, 0])
     args.img_size = envs.unwrapped.cfg.img_size
     print_dict(colored(args, "green", attrs=["bold"]), nesting=4)
     # TRY NOT TO MODIFY: seeding
     seed_everything(
-        envs,
         args.seed,
         use_torch=True,
         torch_deterministic=True,
@@ -627,7 +557,7 @@ def main(args):
                     kl_mean.item(),
                     args.target_kl,
                     args.lr_multiplier,
-                    min_lr=1e-7,
+                    min_lr=1e-9,
                     max_lr=1e-3,
                 )
 
@@ -841,4 +771,4 @@ if __name__ == "__main__":
         simulation_app.close()
 
 
-# python scripts/torchrl/ppo_continuous_action.py --enable_cameras --headless --task Spot-Nav-Avoid-v0 --num_envs 128 --total_timesteps 10_000_000 --log_interval 1 --checkpoint_interval 1_000  --log --ent_coef 0.000001
+# python scripts/leanrl/ppo_continuous_action.py --enable_cameras --headless --task Spot-Nav-Avoid-v0 --num_envs 128 --total_timesteps 10_000_000 --log_interval 1 --checkpoint_interval 1_000  --log --ent_coef 0.000001

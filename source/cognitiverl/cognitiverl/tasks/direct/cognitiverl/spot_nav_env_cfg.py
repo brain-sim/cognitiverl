@@ -22,7 +22,7 @@ class SpotNavEnvCfg(NavEnvCfg):
     observation_space = (
         img_size[0] * img_size[1] * img_size[2] + 4
     )  # Look at _get_state_obs() in the *_env.py file
-    policy_file_path = "spot_policy.pt"
+    policy_file_path = "spot_policy_custom.pt"
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 200, render_interval=render_interval
     )  # dt=1/250
@@ -50,7 +50,8 @@ class SpotNavEnvCfg(NavEnvCfg):
 
     # Reward Coefficients
     goal_reached_bonus = 125.0
-    wall_penalty_weight = 0.2  # 0.2
+    fast_goal_reached_weight = 125.0
+    wall_penalty_weight = -0.2  # -0.2
     linear_speed_weight = 0.0  # 0.05
     laziness_penalty_weight = 0.0  # 0.3
     # angular_speed_weight = 0.1  # 0.05
@@ -62,9 +63,9 @@ class SpotNavEnvCfg(NavEnvCfg):
     max_laziness = 10.0
 
     # Action Scaling
-    throttle_scale = 1.5
+    throttle_scale = 3.0
     steering_scale = 1.0
-    throttle_max = 4.5
+    throttle_max = 9.0
     steering_max = 3.0
 
     # # Action Scaling - for official policy

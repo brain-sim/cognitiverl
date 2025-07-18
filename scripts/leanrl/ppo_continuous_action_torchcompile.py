@@ -12,20 +12,18 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import tqdm
-import wandb
 from isaaclab.utils import configclass
 from tensordict import TensorDict, from_module
 from tensordict.nn import CudaGraphModule
 
+import wandb
+
 os.environ["TORCHDYNAMO_INLINE_INBUILT_NN_MODULES"] = "1"
 
 import os
-import sys
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from models import CNNPPOAgent, MLPPPOAgent
-from utils import load_args, seed_everything, set_high_precision
+from scripts.models import CNNPPOAgent, MLPPPOAgent
+from scripts.utils import load_args, seed_everything, set_high_precision
 
 
 @configclass
@@ -165,14 +163,13 @@ def make_env(env_id, idx, capture_video, run_name, gamma):
 
 
 def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **args):
+    import cognitiverl.tasks  # noqa: F401
     import isaaclab_tasks  # noqa: F401
     from isaaclab_rl.torchrl import (
         IsaacLabRecordEpisodeStatistics,
         IsaacLabVecEnvWrapper,
     )
     from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
-
-    import cognitiverl.tasks  # noqa: F401
 
     def thunk():
         cfg = parse_env_cfg(

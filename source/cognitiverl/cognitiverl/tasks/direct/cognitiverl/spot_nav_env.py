@@ -83,6 +83,7 @@ class SpotNavEnv(NavEnv):
         )
         self.position_tolerance = self.cfg.position_tolerance
         self.goal_reached_bonus = self.cfg.goal_reached_bonus
+        self.fast_goal_reached_weight = self.cfg.fast_goal_reached_weight
         self.laziness_penalty_weight = self.cfg.laziness_penalty_weight
         self.laziness_decay = (
             self.cfg.laziness_decay
@@ -231,17 +232,17 @@ class SpotNavEnv(NavEnv):
             < self.episode_length_buf[goal_reached]
         ).all(), "Previous waypoint reached step is greater than episode length"
         # Compute k using torch.log
-        k = torch.log(torch.tensor(125.0, device=self.device)) / (
-            self.max_episode_length - 1
-        )
+        k = torch.log(
+            torch.tensor(self.fast_goal_reached_weight, device=self.device)
+        ) / (self.max_episode_length - 1)
         steps_taken = self.episode_length_buf - self._previous_waypoint_reached_step
         fast_goal_reached_reward = torch.where(
             goal_reached,
-            125.0 * torch.exp(-k * (steps_taken - 1)),
+            self.fast_goal_reached_weight * torch.exp(-k * (steps_taken - 1)),
             torch.zeros_like(self._previous_waypoint_reached_step),
         )
         fast_goal_reached_reward = torch.clamp(
-            fast_goal_reached_reward, min=0.0, max=125.0
+            fast_goal_reached_reward, min=0.0, max=self.fast_goal_reached_weight
         )
         self._previous_waypoint_reached_step = torch.where(
             goal_reached,

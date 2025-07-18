@@ -23,7 +23,6 @@ import time
 import gymnasium as gym
 import torch
 from isaaclab.app import AppLauncher
-from pynput import keyboard
 
 """Rest everything follows."""
 
@@ -54,13 +53,18 @@ def launch_app():
     # launch omniverse app
     app_launcher = AppLauncher(args_cli)
     simulation_app = app_launcher.app
-    return simulation_app
+    return simulation_app, args_cli
 
 
 try:
     from isaaclab.app import AppLauncher
 
-    simulation_app = launch_app()
+    simulation_app, args_cli = launch_app()
+    print(args_cli)
+    if not args_cli.headless:
+        from pynput import keyboard
+    else:
+        keyboard = None
 except ImportError:
     raise ImportError("Isaac Lab is not installed. Please install it first.")
 
@@ -76,10 +80,11 @@ def make_isaaclab_env(
     *args,
     **kwargs,
 ):
+    import cognitiverl.tasks  # noqa: F401
     import isaaclab_tasks  # noqa: F401
     from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
 
-    import cognitiverl.tasks  # noqa: F401
+    from scripts.wrappers import IsaacLabVecEnvWrapper
 
     def thunk():
         cfg = parse_env_cfg(
@@ -92,6 +97,11 @@ def make_isaaclab_env(
             if (capture_video and log_dir is not None)
             else None,
             debug=False,
+        )
+        env = IsaacLabVecEnvWrapper(
+            env,
+            clip_actions=kwargs.get("clip_actions", None),
+            action_bounds=kwargs.get("action_bounds", None),
         )
         return env
 
@@ -190,7 +200,7 @@ def main():
             action.zero_()
         else:
             step_action = torch.zeros_like(action)
-        _, reward, _, _, _ = env.step(step_action)
+        _, reward, _, _ = env.step(step_action)
         time.sleep(0.02)  # or match your simulation's dt
     env.close()
 
