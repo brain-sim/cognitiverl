@@ -715,41 +715,88 @@ def main(args):
             norm_obs = normalize_obs(obs)
 
             if args.q_chunk and args.horizon > 1:
-                # Generate action sequence but only use the first action for execution
+                # Generate action sequence and execute all actions
                 action_sequences = policy(obs=norm_obs, dones=dones)
-                actions = action_sequences[:, 0]  # Take only the first action
+
+                # Execute all actions in the sequence and collect transitions
+                current_obs = obs
+                for step in range(args.horizon):
+                    actions = action_sequences[:, step]
+                    actions = torch.clamp(actions, action_low, action_high)
+
+                    # TRY NOT TO MODIFY: execute the game and log data.
+                    next_obs, rewards, step_dones, infos = envs.step(actions.float())
+
+                    # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
+                    real_next_obs = next_obs.clone()
+                    transition = TensorDict(
+                        observations=current_obs,
+                        next_observations=real_next_obs,
+                        actions=torch.as_tensor(
+                            actions, device=device, dtype=torch.float
+                        ),
+                        rewards=torch.as_tensor(
+                            rewards, device=device, dtype=torch.float
+                        ),
+                        terminations=infos["terminations"].long(),
+                        time_outs=infos["time_outs"].long(),
+                        dones=step_dones.long(),
+                        batch_size=(envs.num_envs,),
+                        device=buffer_device,
+                    )
+
+                    info_logger.update(
+                        infos,
+                        transition["observations"].max().item(),
+                        transition["observations"].min().item(),
+                        transition["actions"].max().item() * args.action_bounds,
+                        transition["actions"].min().item() * args.action_bounds,
+                    )
+
+                    # Store transition
+                    rb.extend(transition)
+
+                    # Update for next step
+                    current_obs = next_obs
+                    dones = step_dones
+
+                # Update obs for next iteration
+                obs = next_obs
             else:
+                # Original single-step execution
                 actions = policy(obs=norm_obs, dones=dones)
+                actions = torch.clamp(actions, action_low, action_high)
 
-            actions = torch.clamp(actions, action_low, action_high)
+                # TRY NOT TO MODIFY: execute the game and log data.
+                next_obs, rewards, dones, infos = envs.step(actions.float())
 
-        # TRY NOT TO MODIFY: execute the game and log data.
-        next_obs, rewards, dones, infos = envs.step(actions.float())
+                # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
+                real_next_obs = next_obs.clone()
+                transition = TensorDict(
+                    observations=obs,
+                    next_observations=real_next_obs,
+                    actions=torch.as_tensor(actions, device=device, dtype=torch.float),
+                    rewards=torch.as_tensor(rewards, device=device, dtype=torch.float),
+                    terminations=infos["terminations"].long(),
+                    time_outs=infos["time_outs"].long(),
+                    dones=dones.long(),
+                    batch_size=(envs.num_envs,),
+                    device=buffer_device,
+                )
 
-        # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
-        real_next_obs = next_obs.clone()
-        transition = TensorDict(
-            observations=obs,
-            next_observations=real_next_obs,
-            actions=torch.as_tensor(actions, device=device, dtype=torch.float),
-            rewards=torch.as_tensor(rewards, device=device, dtype=torch.float),
-            terminations=infos["terminations"].long(),
-            time_outs=infos["time_outs"].long(),
-            dones=dones.long(),
-            batch_size=(envs.num_envs,),
-            device=buffer_device,
-        )
+                info_logger.update(
+                    infos,
+                    transition["observations"].max().item(),
+                    transition["observations"].min().item(),
+                    transition["actions"].max().item() * args.action_bounds,
+                    transition["actions"].min().item() * args.action_bounds,
+                )
 
-        info_logger.update(
-            infos,
-            transition["observations"].max().item(),
-            transition["observations"].min().item(),
-            transition["actions"].max().item() * args.action_bounds,
-            transition["actions"].min().item() * args.action_bounds,
-        )
+                # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
+                obs = next_obs
 
-        # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
-        obs = next_obs
+                # Store transition
+                rb.extend(transition)
 
         # ALGO LOGIC: training.
         if global_step >= args.measure_burnin + resume_global_step:
@@ -758,7 +805,9 @@ def main(args):
                 * args.num_envs
                 / (time.time() - start_time)
             )
-        rb.extend(transition)
+
+        # Note: rb.extend(transition) is now called inside the action execution blocks above
+
         if global_step > args.learning_starts:
             if global_step % args.rollout_length == 0:
                 update_start_time = time.time()
