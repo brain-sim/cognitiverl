@@ -135,6 +135,8 @@ class ExperimentArgs:
 
     q_chunk: bool = False
     """whether to use q chunk"""
+    horizon: int = 4
+    """horizon for q_chunking (number of action steps to predict). When q_chunk=True, this will be set to num_steps // 2"""
     compile: bool = False
     """use torch.compile"""
     compile_mode: str = "reduce-overhead"
@@ -293,6 +295,17 @@ def main(args):
     else:
         reward_normalizer = nn.Identity()
 
+    # Set horizon for q_chunking
+    if args.q_chunk:
+        args.horizon = max(1, args.num_steps // 2)
+        print_dict(
+            f"Q-chunking enabled with horizon: {args.horizon}",
+            color="cyan",
+            attrs=["bold"],
+        )
+    else:
+        args.horizon = 1
+
     actor_class, critic_class = AGENT_LOOKUP_BY_ALGORITHM[args.algorithm][args.obs_type]
     actor = actor_class(
         n_obs=n_obs,
@@ -305,6 +318,7 @@ def main(args):
         device=device,
         dtype=amp_dtype if amp_enabled else torch.float32,
         hidden_dims=args.actor_hidden_dims,
+        horizon=args.horizon,  # Add horizon parameter
     )
     actor_detach = actor_class(
         n_obs=n_obs,
@@ -317,6 +331,7 @@ def main(args):
         device=device,
         dtype=amp_dtype if amp_enabled else torch.float32,
         hidden_dims=args.actor_hidden_dims,
+        horizon=args.horizon,  # Add horizon parameter
     )
     qnet = critic_class(
         n_obs=n_obs,
@@ -328,6 +343,7 @@ def main(args):
         v_min=args.v_min,
         v_max=args.v_max,
         hidden_dims=args.critic_hidden_dims,
+        horizon=args.horizon,  # Add horizon parameter
     )
 
     # discard params of net
@@ -341,6 +357,7 @@ def main(args):
         v_min=args.v_min,
         v_max=args.v_max,
         hidden_dims=args.critic_hidden_dims,
+        horizon=args.horizon,  # Add horizon parameter
     )
     resume_global_step = 0
     if args.resume_from_checkpoint:
@@ -401,7 +418,7 @@ def main(args):
         n_critic_obs=n_obs,
         asymmetric_obs=False,
         playground_mode=False,
-        n_steps=args.num_steps,
+        n_steps=args.num_steps,  # Keep original n_steps
         gamma=args.gamma,
         device=buffer_device,
     )
@@ -417,6 +434,36 @@ def main(args):
     policy_noise = args.policy_noise
     noise_clip = args.noise_clip
 
+    def extract_action_chunks(data, horizon):
+        """
+        Extract action chunks from n-step buffer data.
+        For q_chunking with horizon = n_step // 2:
+        - Current actions: first horizon actions from the sequence
+        - Next actions: next horizon actions for target computation
+        """
+        batch_size = data["observations"].shape[0]
+
+        # The buffer gives us n-step transitions, we need to extract action sequences
+        # Since the buffer stores single actions per step, we need to reconstruct sequences
+        # For now, we'll use the current action and predict the rest with the actor
+        current_actions = data["actions"]  # (batch_size, n_act)
+
+        # Create action chunks by having the actor predict horizon-length sequences
+        # and use the first action as the sampled action
+        with torch.no_grad():
+            # Get actor predictions for current and next states
+            current_action_sequences = actor(
+                data["observations"]
+            )  # (batch_size, horizon, n_act)
+            next_action_sequences = actor(
+                data["next_observations"]
+            )  # (batch_size, horizon, n_act)
+
+            # Replace first action of current sequence with the sampled action
+            current_action_sequences[:, 0] = current_actions
+
+        return current_action_sequences, next_action_sequences
+
     def update_main(data, log_dict):
         with autocast(
             device_type=amp_device_type, dtype=amp_dtype, enabled=amp_enabled
@@ -430,57 +477,134 @@ def main(args):
                 data["dones"],
             )
 
-            # Ensure rewards and dones have correct dimensions for vmap
             dones = dones.bool()
             time_outs = time_outs.bool()
-            clipped_noise = torch.randn_like(actions)
-            clipped_noise = clipped_noise.mul(policy_noise).clamp(
-                -noise_clip, noise_clip
-            )
-            if args.bootstrap:
-                bootstrap = (time_outs | ~dones).float()
-            else:
-                bootstrap = (~dones).float()
-            next_state_actions = (actor(next_observations) + clipped_noise).clamp(
-                action_low, action_high
-            )
-            if next_state_actions.isinf().any():
-                raise ValueError("next_state_actions inf")
-            discount = args.gamma ** data["effective_n_steps"]
-            with torch.no_grad():
-                qf1_next_target_projected, qf2_next_target_projected = (
-                    qnet_target.projection(
-                        next_observations,
-                        next_state_actions,
-                        rewards,
-                        bootstrap,
-                        discount,
-                    )
+
+            if args.q_chunk and args.horizon > 1:
+                # Extract action chunks for q_chunking
+                current_action_sequences, next_action_sequences = extract_action_chunks(
+                    data, args.horizon
                 )
 
-                qf1_next_target_value = qnet_target.get_value(qf1_next_target_projected)
-                qf2_next_target_value = qnet_target.get_value(qf2_next_target_projected)
+                # Add noise to next action sequences
+                clipped_noise = torch.randn_like(next_action_sequences)
+                clipped_noise = clipped_noise.mul(policy_noise).clamp(
+                    -noise_clip, noise_clip
+                )
+                next_action_sequences = (next_action_sequences + clipped_noise).clamp(
+                    action_low, action_high
+                )
 
-                if args.use_cdq:
-                    qf_next_target_dist = torch.where(
-                        qf1_next_target_value.unsqueeze(1)
-                        < qf2_next_target_value.unsqueeze(1),
-                        qf1_next_target_projected,
-                        qf2_next_target_projected,
-                    )
-                    qf1_next_target_dist = qf2_next_target_dist = qf_next_target_dist
+                if args.bootstrap:
+                    bootstrap = (time_outs | ~dones).float()
                 else:
-                    qf1_next_target_dist = qf1_next_target_projected
-                    qf2_next_target_dist = qf2_next_target_projected
+                    bootstrap = (~dones).float()
 
-            qf1, qf2 = qnet(observations, actions)
-            qf1_loss = -torch.sum(
-                qf1_next_target_dist * F.log_softmax(qf1, dim=1), dim=1
-            ).mean()
-            qf2_loss = -torch.sum(
-                qf2_next_target_dist * F.log_softmax(qf2, dim=1), dim=1
-            ).mean()
-            qf_loss = qf1_loss + qf2_loss
+                # For q_chunking: target_q(s_t, a_{t:t+h}) = Σ_{t'=t+1}^{t'=h} γ^{t'-t} * r_{t'} + frozen_q(s_{t+h}, a_{t+h:t+2h})
+                # The n-step buffer already gives us the discounted sum of rewards
+                discount = args.gamma ** data["effective_n_steps"]
+
+                with torch.no_grad():
+                    qf1_next_target_projected, qf2_next_target_projected = (
+                        qnet_target.projection(
+                            next_observations,
+                            next_action_sequences,
+                            rewards,
+                            bootstrap,
+                            discount,
+                        )
+                    )
+
+                    qf1_next_target_value = qnet_target.get_value(
+                        qf1_next_target_projected
+                    )
+                    qf2_next_target_value = qnet_target.get_value(
+                        qf2_next_target_projected
+                    )
+
+                    if args.use_cdq:
+                        qf_next_target_dist = torch.where(
+                            qf1_next_target_value.unsqueeze(1)
+                            < qf2_next_target_value.unsqueeze(1),
+                            qf1_next_target_projected,
+                            qf2_next_target_projected,
+                        )
+                        qf1_next_target_dist = qf2_next_target_dist = (
+                            qf_next_target_dist
+                        )
+                    else:
+                        qf1_next_target_dist = qf1_next_target_projected
+                        qf2_next_target_dist = qf2_next_target_projected
+
+                qf1, qf2 = qnet(observations, current_action_sequences)
+                qf1_loss = -torch.sum(
+                    qf1_next_target_dist * F.log_softmax(qf1, dim=1), dim=1
+                ).mean()
+                qf2_loss = -torch.sum(
+                    qf2_next_target_dist * F.log_softmax(qf2, dim=1), dim=1
+                ).mean()
+                qf_loss = qf1_loss + qf2_loss
+            else:
+                # Original TD3 logic for non-chunked version
+                clipped_noise = torch.randn_like(actions)
+                clipped_noise = clipped_noise.mul(policy_noise).clamp(
+                    -noise_clip, noise_clip
+                )
+
+                if args.bootstrap:
+                    bootstrap = (time_outs | ~dones).float()
+                else:
+                    bootstrap = (~dones).float()
+
+                next_state_actions = (actor(next_observations) + clipped_noise).clamp(
+                    action_low, action_high
+                )
+                if next_state_actions.isinf().any():
+                    raise ValueError("next_state_actions inf")
+
+                discount = args.gamma ** data["effective_n_steps"]
+
+                with torch.no_grad():
+                    qf1_next_target_projected, qf2_next_target_projected = (
+                        qnet_target.projection(
+                            next_observations,
+                            next_state_actions,
+                            rewards,
+                            bootstrap,
+                            discount,
+                        )
+                    )
+
+                    qf1_next_target_value = qnet_target.get_value(
+                        qf1_next_target_projected
+                    )
+                    qf2_next_target_value = qnet_target.get_value(
+                        qf2_next_target_projected
+                    )
+
+                    if args.use_cdq:
+                        qf_next_target_dist = torch.where(
+                            qf1_next_target_value.unsqueeze(1)
+                            < qf2_next_target_value.unsqueeze(1),
+                            qf1_next_target_projected,
+                            qf2_next_target_projected,
+                        )
+                        qf1_next_target_dist = qf2_next_target_dist = (
+                            qf_next_target_dist
+                        )
+                    else:
+                        qf1_next_target_dist = qf1_next_target_projected
+                        qf2_next_target_dist = qf2_next_target_projected
+
+                qf1, qf2 = qnet(observations, actions)
+                qf1_loss = -torch.sum(
+                    qf1_next_target_dist * F.log_softmax(qf1, dim=1), dim=1
+                ).mean()
+                qf2_loss = -torch.sum(
+                    qf2_next_target_dist * F.log_softmax(qf2, dim=1), dim=1
+                ).mean()
+                qf_loss = qf1_loss + qf2_loss
+
         # optimize the model
         q_optimizer.zero_grad(set_to_none=True)
         scaler.scale(qf_loss).backward()
@@ -511,18 +635,23 @@ def main(args):
             device_type=amp_device_type, dtype=amp_dtype, enabled=amp_enabled
         ):
             observations = data["observations"]
-            qf1, qf2 = qnet(observations, actor(observations))
-            qf1_value = qnet.get_value(
-                F.softmax(qf1, dim=-1)
-            )  # TODO: Check if softmax is calculated on correct dimension
-            qf2_value = qnet.get_value(
-                F.softmax(qf2, dim=-1)
-            )  # TODO: Check if softmax is calculated on correct dimension
+
+            if args.q_chunk and args.horizon > 1:
+                # Generate action sequences for policy update
+                action_sequences = actor(observations)
+                qf1, qf2 = qnet(observations, action_sequences)
+            else:
+                qf1, qf2 = qnet(observations, actor(observations))
+
+            qf1_value = qnet.get_value(F.softmax(qf1, dim=-1))
+            qf2_value = qnet.get_value(F.softmax(qf2, dim=-1))
+
             if args.use_cdq:
                 qf_value = torch.minimum(qf1_value, qf2_value)
             else:
                 qf_value = (qf1_value + qf2_value) / 2.0
             actor_loss = -qf_value.mean()
+
         actor_optimizer.zero_grad(set_to_none=True)
         scaler.scale(actor_loss).backward()
         scaler.unscale_(actor_optimizer)
@@ -585,7 +714,13 @@ def main(args):
         ):
             norm_obs = normalize_obs(obs)
 
-            actions = policy(obs=norm_obs, dones=dones)
+            if args.q_chunk and args.horizon > 1:
+                # Generate action sequence but only use the first action for execution
+                action_sequences = policy(obs=norm_obs, dones=dones)
+                actions = action_sequences[:, 0]  # Take only the first action
+            else:
+                actions = policy(obs=norm_obs, dones=dones)
+
             actions = torch.clamp(actions, action_low, action_high)
 
         # TRY NOT TO MODIFY: execute the game and log data.
