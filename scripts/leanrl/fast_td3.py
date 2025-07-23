@@ -687,11 +687,15 @@ def main(args):
 
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset()
-    args.num_iterations = args.total_timesteps // args.num_envs
+
+    # Adjust iterations and step size based on q_chunking
+    step_size = args.horizon if args.q_chunk else 1
+    args.num_iterations = args.total_timesteps // (args.num_envs * step_size)
+
     pbar = tqdm.tqdm(
-        range(resume_global_step, args.num_iterations),
+        range(resume_global_step, args.num_iterations * step_size, step_size),
         initial=resume_global_step,
-        total=args.num_iterations,
+        total=args.num_iterations * step_size,
         desc=f"Resuming from step {resume_global_step}",
     )
     start_time = None
@@ -805,8 +809,6 @@ def main(args):
                 * args.num_envs
                 / (time.time() - start_time)
             )
-
-        # Note: rb.extend(transition) is now called inside the action execution blocks above
 
         if global_step > args.learning_starts:
             if global_step % args.rollout_length == 0:
