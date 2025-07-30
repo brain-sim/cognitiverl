@@ -105,7 +105,7 @@ class ExperimentArgs:
     # EMA parameters
     use_ema: bool = False
     """Enable Exponential Moving Average for model weights"""
-    ema_decay: float = 0.95
+    ema_decay: float = 0.98
     """EMA decay rate for model weights"""
     ema_start_step: int = 10_000
     """Start applying EMA after this many global steps"""

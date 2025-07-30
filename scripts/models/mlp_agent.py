@@ -197,15 +197,20 @@ class DistributionalQNetwork(nn.Module):
         num_atoms: int,
         v_min: float,
         v_max: float,
+        horizon: int = 1,  # Add horizon parameter
         hidden_dims: list[int] = [1024, 512, 256],
         activation: type[nn.Module] = nn.ReLU,
         device: torch.device = None,
     ):
         super().__init__()
+        self.horizon = horizon
         qnet_layers = []
+        # Input is obs + (horizon * n_act) actions
+        input_dim = n_obs + (horizon * n_act)
+
         for i in range(len(hidden_dims)):
             if i == 0:
-                qnet_layers.append(nn.Linear(n_obs + n_act, hidden_dims[i]))
+                qnet_layers.append(nn.Linear(input_dim, hidden_dims[i]))
             else:
                 qnet_layers.append(nn.Linear(hidden_dims[i - 1], hidden_dims[i]))
             qnet_layers.append(activation())
@@ -217,6 +222,12 @@ class DistributionalQNetwork(nn.Module):
         self.num_atoms = num_atoms
 
     def forward(self, obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        # If horizon > 1, actions should be (batch_size, horizon * n_act)
+        # If horizon == 1, actions should be (batch_size, n_act) - backward compatibility
+        if self.horizon > 1 and actions.dim() == 3:
+            # actions is (batch_size, horizon, n_act), flatten it
+            batch_size = actions.shape[0]
+            actions = actions.view(batch_size, -1)
         x = torch.cat([obs, actions], 1)
         x = self.qnet(x)
         return x
@@ -279,17 +290,20 @@ class MLPFastTD3Critic(nn.Module):
         num_atoms: int,
         v_min: float,
         v_max: float,
+        horizon: int = 1,  # Add horizon parameter
         hidden_dims: list[int] = [512, 256, 128],
         activation: type[nn.Module] = nn.ReLU,
         device: torch.device = None,
     ):
         super().__init__()
+        self.horizon = horizon
         self.qnet1 = DistributionalQNetwork(
             n_obs=n_obs,
             n_act=n_act,
             num_atoms=num_atoms,
             v_min=v_min,
             v_max=v_max,
+            horizon=horizon,  # Pass horizon parameter
             hidden_dims=hidden_dims,
             activation=activation,
             device=device,
@@ -300,6 +314,7 @@ class MLPFastTD3Critic(nn.Module):
             num_atoms=num_atoms,
             v_min=v_min,
             v_max=v_max,
+            horizon=horizon,  # Pass horizon parameter
             hidden_dims=hidden_dims,
             activation=activation,
             device=device,
@@ -357,6 +372,7 @@ class MLPFastTD3Actor(nn.Module):
         n_act: int,
         num_envs: int,
         init_scale: float,
+        horizon: int = 1,  # Add horizon parameter
         hidden_dims: list[int] = [512, 256, 128],
         activation: type[nn.Module] = nn.ReLU,
         output_activation: type[nn.Module] | None = nn.Tanh,
@@ -366,6 +382,8 @@ class MLPFastTD3Actor(nn.Module):
     ):
         super().__init__()
         self.n_act = n_act
+        self.horizon = horizon
+
         actor_layers = []
         for i in range(len(hidden_dims)):
             if i == 0:
@@ -375,13 +393,17 @@ class MLPFastTD3Actor(nn.Module):
             actor_layers.append(activation())
         self.net = nn.Sequential(*actor_layers)
         self.net.to(device)
+
+        # Output horizon * n_act actions when horizon > 1, otherwise n_act
+        output_dim = horizon * n_act if horizon > 1 else n_act
         self.fc_mu = nn.Sequential(
-            nn.Linear(hidden_dims[-1], n_act),
+            nn.Linear(hidden_dims[-1], output_dim),
             output_activation() if output_activation is not None else nn.Identity(),
         )
         nn.init.normal_(self.fc_mu[0].weight, 0.0, init_scale)
         nn.init.constant_(self.fc_mu[0].bias, 0.0)
         self.fc_mu.to(device)
+
         noise_scales = (
             torch.rand(num_envs, 1, device=device) * (std_max - std_min) + std_min
         )
@@ -393,23 +415,29 @@ class MLPFastTD3Actor(nn.Module):
         self.device = device
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        When horizon > 1: Output action sequence π(s) -> a_{t:t+h}
+        Returns: (batch_size, horizon, n_act) if horizon > 1, else (batch_size, n_act)
+        """
         x = self.net(x)
         x = self.fc_mu(x)
-        return x
+
+        if self.horizon > 1:
+            batch_size = x.shape[0]
+            return x.view(batch_size, self.horizon, self.n_act)
+        else:
+            return x
 
     def explore(
         self, obs: torch.Tensor, dones: torch.Tensor = None, deterministic: bool = False
     ) -> torch.Tensor:
         # If dones is provided, resample noise for environments that are done
         if dones is not None and dones.sum() > 0:
-            # Generate new noise scales for done environments (one per environment)
             new_scales = (
                 torch.rand(self.n_envs, 1, device=obs.device)
                 * (self.std_max - self.std_min)
                 + self.std_min
             )
-
-            # Update only the noise scales for environments that are done
             dones_view = dones.view(-1, 1) > 0
             self.noise_scales.copy_(
                 torch.where(dones_view, new_scales, self.noise_scales)
@@ -419,5 +447,9 @@ class MLPFastTD3Actor(nn.Module):
         if deterministic:
             return act
 
-        noise = torch.randn_like(act) * self.noise_scales
+        if self.horizon > 1:
+            # Broadcast noise over horizon dimension
+            noise = torch.randn_like(act) * self.noise_scales.unsqueeze(1)
+        else:
+            noise = torch.randn_like(act) * self.noise_scales
         return act + noise

@@ -16,13 +16,13 @@ from .waypoint import WAYPOINT_CFG
 class SpotNavAvoidEnvCfg(NavEnvCfg):
     decimation = 16  # 2
     render_interval = 16
-    episode_length_s = 60.0
+    episode_length_s = 68.0
     action_space = 3
     img_size = [3, 128, 128]
     observation_space = (
         img_size[0] * img_size[1] * img_size[2] + 4
     )  # Changed from 8 to 9 to include minimum wall distance
-    policy_file_path = "spot_policy_custom_rslrl.pt"
+    policy_file_path = "spot_policy_custom.pt"
     sim: SimulationCfg = SimulationCfg(
         dt=1 / 200, render_interval=render_interval
     )  # dt=1/250
@@ -66,9 +66,9 @@ class SpotNavAvoidEnvCfg(NavEnvCfg):
     max_laziness = 10.0
 
     # Action Scaling
-    throttle_scale = 1.5
+    throttle_scale = 3.0
     steering_scale = 1.0
-    throttle_max = 4.5
+    throttle_max = 9.0
     steering_max = 3.0
 
     termination_on_avoid_goal_collision = True

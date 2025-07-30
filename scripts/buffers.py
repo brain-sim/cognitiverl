@@ -689,6 +689,7 @@ class SimpleReplayBufferOriginal(nn.Module):
         n_obs: int,
         n_act: int,
         n_critic_obs: int,
+        q_chunk: bool = False,
         asymmetric_obs: bool = False,
         playground_mode: bool = False,
         n_steps: int = 1,
@@ -726,6 +727,7 @@ class SimpleReplayBufferOriginal(nn.Module):
         self.gamma = gamma
         self.n_steps = n_steps
         self.device = device
+        self.q_chunk = q_chunk
 
         self.observations = torch.zeros(
             (n_env, buffer_size, *self.n_obs), device=device, dtype=torch.float
@@ -1012,6 +1014,19 @@ class SimpleReplayBufferOriginal(nn.Module):
                 1,
                 all_indices,
             )
+
+            if self.q_chunk:
+                all_act_indices = all_indices.unsqueeze(-1).expand(
+                    -1, -1, -1, self.n_act
+                )
+                actions = torch.gather(
+                    self.actions.unsqueeze(-2).expand(-1, -1, self.n_steps, -1),
+                    1,
+                    all_act_indices,
+                )
+                actions = actions.flatten(start_dim=2).reshape(
+                    self.n_env * batch_size, -1
+                )
 
             # Create masks for rewards *after* first done
             # This creates a cumulative product that zeroes out rewards after the first done

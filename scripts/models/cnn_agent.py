@@ -316,12 +316,14 @@ class CNNFastTD3Critic(nn.Module):
         num_atoms: int,
         v_min: float,
         v_max: float,
+        horizon: int = 1,
         hidden_dims: list[int] = [512, 256, 128],
         activation: type[nn.Module] = nn.ReLU,
         device: torch.device = torch.device("cpu"),
         dtype: torch.dtype = torch.float32,
     ):
         super().__init__()
+        self.horizon = horizon
         channels, height, width = img_size
         self.img_size = (channels, height, width)
         self.dtype = dtype
@@ -330,7 +332,7 @@ class CNNFastTD3Critic(nn.Module):
 
         self.qnet1 = DistributionalQNetwork(
             n_obs=self.feature_size,
-            n_act=n_act,
+            n_act=n_act * horizon,
             num_atoms=num_atoms,
             v_min=v_min,
             v_max=v_max,
@@ -340,7 +342,7 @@ class CNNFastTD3Critic(nn.Module):
         )
         self.qnet2 = DistributionalQNetwork(
             n_obs=self.feature_size,
-            n_act=n_act,
+            n_act=n_act * horizon,
             num_atoms=num_atoms,
             v_min=v_min,
             v_max=v_max,
@@ -439,6 +441,7 @@ class CNNFastTD3Actor(nn.Module):
         n_act: int,
         num_envs: int,
         init_scale: float,
+        horizon: int = 1,
         img_size: List[int] = [3, 32, 32],
         hidden_dims: list[int] = [512, 256, 128],
         activation: type[nn.Module] = nn.ReLU,
@@ -450,8 +453,9 @@ class CNNFastTD3Actor(nn.Module):
     ):
         super().__init__()
         self.n_act = n_act
-        self.img_size = img_size
+        self.horizon = horizon
         channels, height, width = img_size
+        print(f"Image size: {img_size}")
         self.img_size = (channels, height, width)
         self.dtype = dtype
         self.device = device
@@ -467,7 +471,7 @@ class CNNFastTD3Actor(nn.Module):
         self.net = nn.Sequential(*actor_layers)
         self.net.to(device)
         self.fc_mu = nn.Sequential(
-            nn.Linear(hidden_dims[-1], n_act),
+            nn.Linear(hidden_dims[-1], n_act * horizon),
             output_activation() if output_activation is not None else nn.Identity(),
         )
         nn.init.normal_(self.fc_mu[0].weight, 0.0, init_scale)
@@ -502,8 +506,10 @@ class CNNFastTD3Actor(nn.Module):
         self.backbone.to(dtype=self.dtype, device=self.device)
 
         # Get feature size
+        print(f"Image size: {self.img_size}")
         dummy = torch.zeros(1, *self.img_size, device=self.device, dtype=self.dtype)
         self.feature_size = self.backbone(dummy).view(1, -1).size(1)
+        print(f"Feature size: {self.feature_size}")
 
     @torch.no_grad()
     def _extract_features(self, x: torch.Tensor) -> torch.Tensor:

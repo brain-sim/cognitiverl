@@ -213,7 +213,6 @@ def make_isaaclab_env(
     capture_video,
     disable_fabric,
     log_dir=None,
-    video_length=200,
     max_total_steps=None,
     *args,
     **kwargs,
@@ -252,8 +251,10 @@ def make_isaaclab_env(
             os.makedirs(os.path.join(log_dir, "videos", "play"), exist_ok=True)
             video_kwargs = {
                 "video_folder": os.path.join(log_dir, "videos", "play"),
-                "step_trigger": lambda step: step % 1000 == 0,
-                "video_length": kwargs.get("video_length", 500),
+                "step_trigger": lambda step: step % kwargs.get("video_interval", 100)
+                == 0,
+                "video_length": kwargs.get("video_length", 50),
+                "fps": 10,
                 "disable_logger": True,
             }
             print_dict(video_kwargs, nesting=4, color="magenta", attrs=["bold"])

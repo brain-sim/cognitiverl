@@ -133,7 +133,9 @@ class ExperimentArgs:
     reward_normalization: bool = False
     """whether to normalize the rewards"""
 
-    compile: bool = True
+    q_chunk: bool = False
+    """whether to use q chunk"""
+    compile: bool = False
     """use torch.compile"""
     compile_mode: str = "reduce-overhead"
     """the mode of the torch.compile"""
@@ -147,6 +149,8 @@ class ExperimentArgs:
     """whether to use amp"""
     amp_dtype: str = "bf16"
     """the dtype of the amp"""
+    rollout_length: int = 1
+    """the length of the rollout"""
     num_steps: int = 8
     """number of steps to run the environment"""
     action_bounds: float = 1.0
@@ -166,9 +170,9 @@ class ExperimentArgs:
     save_buffer: bool = False
     """whether to save the buffer"""
 
-    clip_grad_norm: bool = False
+    clip_grad_norm: bool = True
     """whether to clip the gradient norm"""
-    max_grad_norm: float = 0.0
+    max_grad_norm: float = 1.0
     """the maximum norm for the gradient clipping"""
     actor_hidden_dims: list[int] = [512, 256, 128]
     """the hidden dimensions of the actor"""
@@ -254,12 +258,12 @@ def main(args):
         args.disable_fabric,
         action_bounds=args.action_bounds,
         clip_actions=args.clip_actions,
-        run_dir=run_dir,
+        log_dir=run_dir,
         video_length=args.video_length,
         video_interval=args.video_interval,
     )()
     if args.capture_video:
-        envs.unwrapped.sim.set_camera_view(eye=[10, 10, 5], target=[0.0, 0.0, 0.0])
+        envs.unwrapped.sim.set_camera_view(eye=[0, 0, 100], target=[0.0, 0.0, 0.0])
     args.img_size = envs.unwrapped.cfg.img_size
     print_dict(args, color="green", attrs=["bold"])
     n_obs = int(np.prod(envs.num_obs))
@@ -289,6 +293,16 @@ def main(args):
     else:
         reward_normalizer = nn.Identity()
 
+    # Set horizon for q_chunking
+    horizon = 1
+    if args.q_chunk:
+        horizon = args.num_steps
+        print_dict(
+            f"Q-chunking enabled with horizon: {horizon}",
+            color="cyan",
+            attrs=["bold"],
+        )
+
     actor_class, critic_class = AGENT_LOOKUP_BY_ALGORITHM[args.algorithm][args.obs_type]
     actor = actor_class(
         n_obs=n_obs,
@@ -301,6 +315,7 @@ def main(args):
         device=device,
         dtype=amp_dtype if amp_enabled else torch.float32,
         hidden_dims=args.actor_hidden_dims,
+        horizon=horizon,  # Add horizon parameter
     )
     actor_detach = actor_class(
         n_obs=n_obs,
@@ -313,6 +328,7 @@ def main(args):
         device=device,
         dtype=amp_dtype if amp_enabled else torch.float32,
         hidden_dims=args.actor_hidden_dims,
+        horizon=horizon,  # Add horizon parameter
     )
     qnet = critic_class(
         n_obs=n_obs,
@@ -324,6 +340,7 @@ def main(args):
         v_min=args.v_min,
         v_max=args.v_max,
         hidden_dims=args.critic_hidden_dims,
+        horizon=horizon,  # Add horizon parameter
     )
 
     # discard params of net
@@ -337,6 +354,7 @@ def main(args):
         v_min=args.v_min,
         v_max=args.v_max,
         hidden_dims=args.critic_hidden_dims,
+        horizon=horizon,  # Add horizon parameter
     )
     resume_global_step = 0
     if args.resume_from_checkpoint:
@@ -396,8 +414,9 @@ def main(args):
         n_act=n_act,
         n_critic_obs=n_obs,
         asymmetric_obs=False,
+        q_chunk=args.q_chunk,
         playground_mode=False,
-        n_steps=args.num_steps,
+        n_steps=args.num_steps,  # Keep original n_steps
         gamma=args.gamma,
         device=buffer_device,
     )
@@ -413,6 +432,36 @@ def main(args):
     policy_noise = args.policy_noise
     noise_clip = args.noise_clip
 
+    def rollout(actions):
+        # TRY NOT TO MODIFY: execute the game and log data.
+        next_obs, rewards, dones, infos = envs.step(actions.float())
+
+        # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
+        real_next_obs = next_obs.clone()
+        transition = TensorDict(
+            observations=obs,
+            next_observations=real_next_obs,
+            actions=torch.as_tensor(actions, device=device, dtype=torch.float),
+            rewards=torch.as_tensor(rewards, device=device, dtype=torch.float),
+            terminations=infos["terminations"].long(),
+            time_outs=infos["time_outs"].long(),
+            dones=dones.long(),
+            batch_size=(envs.num_envs,),
+            device=buffer_device,
+        )
+
+        info_logger.update(
+            infos,
+            transition["observations"].max().item(),
+            transition["observations"].min().item(),
+            transition["actions"].max().item() * args.action_bounds,
+            transition["actions"].min().item() * args.action_bounds,
+        )
+
+        # Store transition
+        rb.extend(transition)
+        return next_obs
+
     def update_main(data, log_dict):
         with autocast(
             device_type=amp_device_type, dtype=amp_dtype, enabled=amp_enabled
@@ -426,9 +475,12 @@ def main(args):
                 data["dones"],
             )
 
-            # Ensure rewards and dones have correct dimensions for vmap
             dones = dones.bool()
             time_outs = time_outs.bool()
+
+            # For q_chunking: target_q(s_t, a_{t:t+h}) = Σ_{t'=t+1}^{t'=h} γ^{t'-t} * r_{t'} + frozen_q(s_{t+h}, a_{t+h:t+2h})
+            # The n-step buffer already gives us the discounted sum of rewards
+            # Original TD3 logic for non-chunked version
             clipped_noise = torch.randn_like(actions)
             clipped_noise = clipped_noise.mul(policy_noise).clamp(
                 -noise_clip, noise_clip
@@ -508,12 +560,8 @@ def main(args):
         ):
             observations = data["observations"]
             qf1, qf2 = qnet(observations, actor(observations))
-            qf1_value = qnet.get_value(
-                F.softmax(qf1, dim=-1)
-            )  # TODO: Check if softmax is calculated on correct dimension
-            qf2_value = qnet.get_value(
-                F.softmax(qf2, dim=-1)
-            )  # TODO: Check if softmax is calculated on correct dimension
+            qf1_value = qnet.get_value(F.softmax(qf1, dim=-1))
+            qf2_value = qnet.get_value(F.softmax(qf2, dim=-1))
             if args.use_cdq:
                 qf_value = torch.minimum(qf1_value, qf2_value)
             else:
@@ -554,24 +602,31 @@ def main(args):
 
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset()
-    args.num_iterations = args.total_timesteps // args.num_envs
+
+    # Adjust iterations and step size based on q_chunking
+    args.num_iterations = args.total_timesteps // (args.num_envs)
+    actual_iterations = (
+        args.num_iterations - resume_global_step + horizon - 1
+    ) // horizon
     pbar = tqdm.tqdm(
-        range(resume_global_step, args.num_iterations),
+        range(resume_global_step, args.num_iterations, horizon),
         initial=resume_global_step,
-        total=args.num_iterations,
+        total=actual_iterations,
         desc=f"Resuming from step {resume_global_step}",
     )
     start_time = None
     dones = None
-    max_ep_ret = -float("inf")
     desc = ""
-    log_transition = {}
-    info_logger = TorchRLInfoLogger(device="cpu", buffer_size=1000)
+    info_logger = TorchRLInfoLogger(device="cpu", buffer_size=50)
+    measure_burnin = None  # Initialize measure_burnin
 
     for global_step in pbar:
         mark_step()
         out_main = TensorDict()
-        if global_step == args.measure_burnin + resume_global_step:
+        if (
+            global_step >= args.measure_burnin + resume_global_step
+            and measure_burnin is None
+        ):
             start_time = time.time()
             measure_burnin = global_step
 
@@ -581,107 +636,112 @@ def main(args):
             autocast(device_type=amp_device_type, dtype=amp_dtype, enabled=amp_enabled),
         ):
             norm_obs = normalize_obs(obs)
-
-            actions = policy(obs=norm_obs, dones=dones)
+            if args.q_chunk:
+                actions = policy(obs=norm_obs, dones=dones)
+                actions = actions.reshape(actions.shape[0], horizon, -1)
+            else:
+                actions = policy(obs=norm_obs, dones=dones)
             actions = torch.clamp(actions, action_low, action_high)
 
-        # TRY NOT TO MODIFY: execute the game and log data.
-        next_obs, rewards, dones, infos = envs.step(actions.float())
-
-        # TRY NOT TO MODIFY: save data to reply buffer; handle `final_observation`
-        real_next_obs = next_obs.clone()
-        transition = TensorDict(
-            observations=obs,
-            next_observations=real_next_obs,
-            actions=torch.as_tensor(actions, device=device, dtype=torch.float),
-            rewards=torch.as_tensor(rewards, device=device, dtype=torch.float),
-            terminations=infos["terminations"].long(),
-            time_outs=infos["time_outs"].long(),
-            dones=dones.long(),
-            batch_size=(envs.num_envs,),
-            device=buffer_device,
-        )
-
-        info_logger.update(
-            infos,
-            transition["observations"].max().item(),
-            transition["observations"].min().item(),
-            transition["actions"].max().item() * args.action_bounds,
-            transition["actions"].min().item() * args.action_bounds,
-        )
-
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
-        obs = next_obs
+        obs = rollout(actions[:, 0] if args.q_chunk else actions)
+        log_infos = info_logger.get_averaged_logs()  # TODO
+        info_logger.reset()
+        wandb.log(
+            {
+                **log_infos,
+            },
+            step=global_step * args.num_envs,
+        )
+        if args.q_chunk:
+            for i in range(1, horizon):
+                obs = rollout(actions[:, i])
+                log_infos = info_logger.get_averaged_logs()  # TODO
+                info_logger.reset()
+                if i < horizon - 1:
+                    wandb.log(
+                        {
+                            **log_infos,
+                        },
+                        step=(global_step + i) * args.num_envs,
+                    )
 
         # ALGO LOGIC: training.
-        if global_step >= args.measure_burnin + resume_global_step:
+        if (
+            global_step >= args.measure_burnin + resume_global_step
+            and measure_burnin is not None
+        ):
             speed = (
                 (global_step - measure_burnin)
                 * args.num_envs
                 / (time.time() - start_time)
             )
-        rb.extend(transition)
+
         if global_step > args.learning_starts:
-            update_start_time = time.time()
-            for i in range(args.num_updates):
-                data = rb.sample(max(1, args.batch_size // args.num_envs))
-                data["observations"] = normalize_obs(data["observations"])
-                data["next_observations"] = normalize_obs(data["next_observations"])
-                data["rewards"] = normalize_reward(data["rewards"])
-                out_main = update_main(data, out_main)
-                if args.num_updates > 1:
-                    if i % args.policy_frequency == 1:
-                        out_main = update_pol(data, out_main)
-                else:
-                    if global_step % args.policy_frequency == 0:
-                        out_main = update_pol(data, out_main)
+            if global_step % args.rollout_length == 0:
+                update_start_time = time.time()
+                for i in range(args.num_updates * horizon):
+                    data = rb.sample(max(1, args.batch_size // args.num_envs))
+                    data["observations"] = normalize_obs(data["observations"])
+                    data["next_observations"] = normalize_obs(data["next_observations"])
+                    data["rewards"] = normalize_reward(data["rewards"])
+                    out_main = update_main(data, out_main)
+                    if args.num_updates > 1:
+                        if i % args.policy_frequency == 1:
+                            out_main = update_pol(data, out_main)
+                    else:
+                        if (
+                            global_step // args.rollout_length
+                        ) % args.policy_frequency == 0:
+                            out_main = update_pol(data, out_main)
 
-                # update the target networks
-                # lerp is defined as x' = x + w (y-x), which is equivalent to x' = (1-w) x + w y
-                soft_update(qnet, qnet_target, args.tau)
+                    # update the target networks
+                    # lerp is defined as x' = x + w (y-x), which is equivalent to x' = (1-w) x + w y
+                    soft_update(qnet, qnet_target, args.tau)
 
-            if (
-                args.log_interval > 0
-                and global_step % args.log_interval == 0
-                and start_time is not None
-            ):
-                update_time = time.time() - update_start_time
-                desc = f"update time: {update_time: 4.4f}s"
-                log_infos = info_logger.get_averaged_logs()  # TODO
-                info_logger.reset()
-                with torch.no_grad():
-                    logs = {
-                        **log_transition,
-                        **log_infos,
-                    }
-                    logs.update({k: v.mean() for k, v in out_main.items()})
-                wandb.log(
-                    {
-                        "speed": speed,
-                        **logs,
-                    },
-                    step=global_step * args.num_envs,
-                )
+                if (
+                    args.log_interval > 0
+                    and (global_step // args.rollout_length) % args.log_interval == 0
+                    and start_time is not None
+                ):
+                    update_time = time.time() - update_start_time
+                    desc = f"update time: {update_time: 4.4f}s"
+                    with torch.no_grad():
+                        logs = {**log_infos}
+                        logs.update({k: v.mean() for k, v in out_main.items()})
+                    wandb.log(
+                        {
+                            "speed": speed,
+                            **logs,
+                        },
+                        step=(global_step + horizon - 1) * args.num_envs
+                        if args.q_chunk
+                        else global_step * args.num_envs,
+                    )
 
-            if (
-                args.checkpoint_interval > 0
-                and global_step % args.checkpoint_interval == 0
-                and start_time is not None
-            ):
-                save_params(
-                    global_step=global_step,
-                    actor=actor,
-                    qnet=qnet,
-                    qnet_target=qnet_target,
-                    obs_normalizer=obs_normalizer,
-                    critic_obs_normalizer=None,
-                    args=args,
-                    save_path=os.path.join(ckpt_dir, f"ckpt_{global_step}.pt"),
-                )
-            actor_scheduler.step()
-            q_scheduler.step()
+                if (
+                    args.checkpoint_interval > 0
+                    and (global_step // args.rollout_length) % args.checkpoint_interval
+                    == 0
+                    and start_time is not None
+                ):
+                    save_params(
+                        global_step=global_step,
+                        actor=actor,
+                        qnet=qnet,
+                        qnet_target=qnet_target,
+                        obs_normalizer=obs_normalizer,
+                        critic_obs_normalizer=None,
+                        args=args,
+                        save_path=os.path.join(ckpt_dir, f"ckpt_{global_step}.pt"),
+                    )
+                actor_scheduler.step()
+                q_scheduler.step()
 
-        if global_step >= args.measure_burnin + resume_global_step:
+        if (
+            global_step >= args.measure_burnin + resume_global_step
+            and measure_burnin is not None
+        ):
             pbar.set_description(f"{speed: 4.4f} sps, " + desc)
 
     envs.close()
