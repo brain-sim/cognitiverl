@@ -70,7 +70,7 @@ class ExperimentArgs:
     device: str = "cuda:0"
     """device to use for training"""
 
-    checkpoint_path: str = "/home/chandramouli/cognitiverl/wandb/run-20250718_194601-qqo2ms79/files/checkpoints/ckpt_4000.pt"
+    checkpoint_path: str = "/home/chandramouli/cognitiverl/wandb/run-20250801_045221-hcivgreo/files/checkpoints/ckpt_10000.pt"
     """path to the checkpoint to load"""
     num_eval_envs: int = 32
     """number of environments to run for evaluation/play."""
@@ -209,7 +209,9 @@ def main(args):
     # eval_envs.unwrapped.sim.set_camera_view(eye=[0, 0, 100], target=[0.0, 0.0, 0.0])
     n_obs = int(np.prod(eval_envs.num_obs))
     n_act = int(np.prod(eval_envs.num_actions))
-
+    q_chunk = checkpoint.get("args", {}).get("q_chunk", False)
+    horizon = checkpoint.get("args", {}).get("num_steps", 1)
+    print(horizon, q_chunk)
     assert isinstance(eval_envs.action_space, gym.spaces.Box), (
         "only continuous action space is supported"
     )
@@ -219,7 +221,7 @@ def main(args):
         if args.obs_type == "image":
             agent = actor(
                 n_obs,
-                n_act,
+                n_act * horizon,
                 num_envs=args.num_eval_envs,
                 device=device,
                 init_scale=checkpoint["args"]["init_scale"],
@@ -228,7 +230,7 @@ def main(args):
         else:
             agent = actor(
                 n_obs,
-                n_act,
+                n_act * horizon,
                 num_envs=args.num_eval_envs,
                 device=device,
                 init_scale=checkpoint["args"]["init_scale"],
@@ -288,12 +290,16 @@ def main(args):
         while step < args.num_eval_env_steps and not done.all():
             # Store current observations
             obs_history.append(obs.clone().cpu().numpy())
-
-            obs = normalize_obs(obs, update=False)
-            if hasattr(play_agent, "get_action"):
-                action = play_agent.get_action(obs)
-            else:
-                action = play_agent(obs)
+            if step % horizon == 0:
+                obs = normalize_obs(obs, update=False)
+                if hasattr(play_agent, "get_action"):
+                    action_chunk = play_agent.get_action(obs)
+                else:
+                    action_chunk = play_agent(obs)
+            action_chunk = action_chunk.reshape(args.num_eval_envs, horizon, -1)
+            print(action_chunk.shape)
+            action = action_chunk[:, step % horizon]
+            print(step % horizon)
             obs, _, done, _ = eval_envs.step(action)
             step += 1
             global_step += args.num_eval_envs
