@@ -81,6 +81,7 @@ class SequenceDataset:
         pad_sequence: bool = True,
         normalize_actions: bool = True,
         modality_type: str = "state+image",  # "state", "image", "state+image"
+        demo_limit: int | None = None,
         **robomimic_kwargs,
     ):
         """Initialize dataset wrapper around robomimic's SequenceDataset.
@@ -98,7 +99,7 @@ class SequenceDataset:
         self.hdf5_path = hdf5_path
         self.modality_type = modality_type
         self.normalize_actions = normalize_actions
-
+        self.demo_limit = demo_limit
         # Default keys
         self.state_keys = state_keys or [
             "left_eef_pos",
@@ -258,6 +259,8 @@ class SequenceDataset:
         return state_seq, image_seq, actions
 
     def __len__(self) -> int:
+        if self.demo_limit is not None:
+            return min(len(self.dataset), self.demo_limit)
         return len(self.dataset)
 
     def __getitem__(self, idx: int) -> Dict:

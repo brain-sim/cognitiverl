@@ -158,12 +158,21 @@ class SeqFlowPolicy(nn.Module):
         return F.mse_loss(v_pred, v_target, reduction="none").sum(dim=-1).mean()
 
     @torch.no_grad()
-    def sample_actions(self, state_seq=None, image_seq=None, steps: int = 32):
+    def sample_actions(
+        self,
+        state_seq=None,
+        image_seq=None,
+        steps: int = 32,
+        deterministic: bool = False,
+    ):
         B = state_seq.size(0) if state_seq is not None else image_seq.size(0)
         ctx = self.encode_obs(state_seq, image_seq)
 
         dt = 1.0 / steps
-        x = torch.randn(B, self.action_dim, device=ctx.device)
+        if deterministic:
+            x = torch.zeros(B, self.action_dim, device=ctx.device)
+        else:
+            x = torch.randn(B, self.action_dim, device=ctx.device)
         for i in range(steps):
             t = torch.full((B, 1), i * dt, device=ctx.device)
             v = self.flow(torch.cat([ctx, x, t], dim=-1))

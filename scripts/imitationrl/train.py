@@ -86,14 +86,12 @@ class TrainArgs:
     run_name: str = "seq_flow_bc"
     log_image_freq: int = 1  # Log images every N epochs
 
-    # Checkpoints
-    ckpt_dir: str = "checkpoints"
     resume: Optional[str] = None
 
     # Environment (for play)
     task: str = "Isaac-NutPour-GR1T2-Pink-IK-Abs-v0"
     num_eval_envs: int = 16
-    num_eval_steps: int = 1000
+    num_eval_steps: int = 350
     headless: bool = True
     enable_cameras: bool = True
     capture_video: bool = True
@@ -421,8 +419,10 @@ class FlowBCTrainer:
 
             # Create wandb subdirectories
             run_dir = run.dir
-            os.makedirs(os.path.join(run_dir, "checkpoints"), exist_ok=True)
-            os.makedirs(os.path.join(run_dir, "videos"), exist_ok=True)
+            self.ckpt_dir = os.path.join(run_dir, "checkpoints")
+            os.makedirs(self.ckpt_dir, exist_ok=True)
+            self.videos_dir = os.path.join(run_dir, "videos")
+            os.makedirs(self.videos_dir, exist_ok=True)
 
             return run
         except Exception as e:
@@ -571,12 +571,15 @@ class FlowBCTrainer:
 
             print("🔧 Creating environment...")
             self.eval_envs = make_isaaclab_env(
+                self.args.seed,
                 self.args.task,
                 self.args.device,
                 self.args.num_eval_envs,
                 self.args.capture_video,
                 False,  # disable_fabric
                 log_dir=self.run.dir if self.run else ".",
+                video_length=self.args.num_eval_steps,
+                video_interval=self.args.num_eval_steps,
             )()
 
             print(f"🎯 Task: {self.args.task}")
@@ -766,7 +769,9 @@ class FlowBCTrainer:
 
             # Step-wise logging
             if self.run:
-                self.run.log(step_metrics, step=epoch * len(self.train_loader) + step)
+                self.run.log(
+                    step_metrics, step=(epoch + 1) * len(self.train_loader) + step
+                )
 
             # Update progress bar with key metrics
             pbar.set_postfix(
@@ -919,6 +924,9 @@ class FlowBCTrainer:
         episode_rewards = []
         current_rewards = torch.zeros(self.args.num_eval_envs)
 
+        # Initialize rolling buffers for sequence (similar to robomimic padding)
+        state_buffer, image_buffer = self._init_sequence_buffers(obs)
+
         play_pbar = tqdm(
             range(self.args.num_eval_steps), desc="🎮 Playing", leave=False, ncols=100
         )
@@ -927,17 +935,20 @@ class FlowBCTrainer:
             if done.all():
                 break
 
-            # Process observations
-            state_seq, image_seq, _ = self.dataset.process_batch(
-                {"obs": obs}, self.device
+            # Update rolling buffers with current observation
+            state_buffer, image_buffer = self._update_sequence_buffers(
+                obs, state_buffer, image_buffer
             )
 
-            # Get action from model
+            # Get action from model using current sequence buffers
             with torch.amp.autocast(
                 device_type="cuda", enabled=self.amp_enabled, dtype=self.amp_dtype
             ):
                 pred_actions = self.model.sample_actions(
-                    state_seq, image_seq, steps=self.args.val_flow_steps
+                    state_buffer,
+                    image_buffer,
+                    steps=self.args.val_flow_steps,
+                    deterministic=True,
                 )
 
             # Denormalize actions for environment
@@ -945,17 +956,22 @@ class FlowBCTrainer:
                 pred_actions = self.action_normalizer.denormalize(pred_actions)
 
             # Step environment
-            obs, rewards, terminated, truncated, _ = self.eval_envs.step(pred_actions)
-            done = terminated | truncated
+            obs, rewards, done, _ = self.eval_envs.step(pred_actions)
 
             # Track rewards
-            current_rewards += rewards
+            current_rewards += rewards.cpu()
 
-            # Handle episode completion
+            # Handle episode completion - reset buffers for completed episodes
             for i in range(self.args.num_eval_envs):
-                if done[i] and len(episode_rewards) < 100:  # Limit logging
-                    episode_rewards.append(current_rewards[i].item())
+                if done[i]:
+                    if len(episode_rewards) < 100:  # Limit logging
+                        episode_rewards.append(current_rewards[i].item())
                     current_rewards[i] = 0.0
+                    # Reset sequence buffers for this environment
+                    if state_buffer is not None:
+                        state_buffer[i] = 0.0
+                    if image_buffer is not None:
+                        image_buffer[i] = 0.0
 
             step_count += 1
             play_pbar.set_postfix(
@@ -976,17 +992,149 @@ class FlowBCTrainer:
                 "play/episodes_completed": len(episode_rewards),
                 "play/steps_taken": step_count,
             }
-            self.run.log(play_metrics, step=epoch)
+            self.run.log(play_metrics, step=(epoch + 1) * len(self.train_loader))
 
         print(
             f"🎯 Play completed: {len(episode_rewards)} episodes, avg reward: {np.mean(episode_rewards):.2f}"
         )
 
+    def _init_sequence_buffers(self, initial_obs):
+        """Initialize rolling sequence buffers with zeros (like robomimic padding)."""
+        batch_size = self.args.num_eval_envs
+        seq_len = self.args.sequence_length
+
+        state_buffer = None
+        image_buffer = None
+
+        try:
+            # Initialize state buffer if needed
+            if self.args.modality_type in ("state", "state+image"):
+                # Infer state dimension from first observation
+                state_parts = []
+                for key in self.dataset.state_keys:
+                    if key in initial_obs:
+                        obs_data = initial_obs[key]
+                        flat_dim = obs_data.view(batch_size, -1).shape[1]
+                        state_parts.append(flat_dim)
+
+                if state_parts:
+                    total_state_dim = sum(state_parts)
+                    state_buffer = torch.zeros(
+                        batch_size,
+                        seq_len,
+                        total_state_dim,
+                        device=self.device,
+                        dtype=torch.float32,
+                    )
+                    print(f"🔧 Initialized state buffer: {state_buffer.shape}")
+
+            # Initialize image buffer if needed
+            if self.args.modality_type in ("image", "state+image"):
+                # Use first available image key
+                for key in self.dataset.image_keys:
+                    if key in initial_obs:
+                        img_data = initial_obs[key]
+                        if img_data.dim() == 4:  # (B, C, H, W)
+                            _, H, W, C = img_data.shape
+                            image_buffer = torch.zeros(
+                                batch_size,
+                                seq_len,
+                                C,
+                                H,
+                                W,
+                                device=self.device,
+                                dtype=torch.float32,
+                            )
+                            print(f"🔧 Initialized image buffer: {image_buffer.shape}")
+                            break
+
+        except Exception as e:
+            print(f"⚠️  Error initializing buffers: {e}")
+            print("🔧 Using fallback buffer initialization")
+
+            # Fallback initialization
+            if self.args.modality_type in ("state", "state+image"):
+                state_buffer = torch.zeros(
+                    batch_size,
+                    seq_len,
+                    36,  # fallback state dim
+                    device=self.device,
+                    dtype=torch.float32,
+                )
+
+            if self.args.modality_type in ("image", "state+image"):
+                C, H, W = self.args.img_size
+                image_buffer = torch.zeros(
+                    batch_size,
+                    seq_len,
+                    C,
+                    H,
+                    W,
+                    device=self.device,
+                    dtype=torch.float32,
+                )
+        return state_buffer, image_buffer
+
+    def _update_sequence_buffers(self, obs, state_buffer, image_buffer):
+        """Update rolling sequence buffers with new observation (robomimic-style rolling)."""
+
+        try:
+            # Update state buffer
+            if state_buffer is not None and self.args.modality_type in (
+                "state",
+                "state+image",
+            ):
+                # Extract current state observation
+                state_parts = []
+                for key in self.dataset.state_keys:
+                    if key in obs:
+                        obs_data = obs[key]
+                        flat_data = obs_data.view(
+                            obs_data.shape[0], -1
+                        )  # (B, features)
+                        state_parts.append(flat_data)
+
+                if state_parts:
+                    current_state = torch.cat(
+                        state_parts, dim=-1
+                    )  # (B, total_state_dim)
+
+                    # Roll buffer: move everything left by 1, add new obs at the end
+                    state_buffer = torch.roll(state_buffer, shifts=-1, dims=1)
+                    state_buffer[:, -1, :] = current_state.to(self.device)
+
+            # Update image buffer
+            if image_buffer is not None and self.args.modality_type in (
+                "image",
+                "state+image",
+            ):
+                # Extract current image observation (use first available key)
+                for key in self.dataset.image_keys:
+                    if key in obs:
+                        img_data = obs[key]
+                        if img_data.dim() == 4:  # (B, C, H, W)
+                            # Normalize to [0, 1] if needed
+                            if img_data.max() > 1.0:
+                                img_data = img_data.float() / 255.0
+
+                            # Roll buffer: move everything left by 1, add new obs at the end
+                            image_buffer = torch.roll(image_buffer, shifts=-1, dims=1)
+                            image_buffer[:, -1, :, :, :] = img_data.permute(
+                                0, 3, 1, 2
+                            ).to(self.device)
+                            break
+
+        except Exception as e:
+            print(f"⚠️  Error updating buffers: {e}")
+            # Continue with existing buffers (graceful degradation)
+
+        return state_buffer, image_buffer
+
     def fit(self):
         """Main training loop with comprehensive logging."""
         print_section_header("🚀 TRAINING STARTED")
         print(f"📅 Epochs: {self.start_epoch + 1} → {self.args.num_epochs}")
-        print(f"💾 Checkpoint dir: {self.args.ckpt_dir}")
+        print(f"💾 Checkpoint dir: {self.ckpt_dir}")
         print(f"📊 WandB: {'Online' if self.args.log else 'Offline'}")
         print(f"🎮 Environment play: Every {self.args.eval_freq * 2} epochs")
 
@@ -1010,7 +1158,7 @@ class FlowBCTrainer:
                     self.best_val_loss = val_loss
 
                 # Play in environment after validation
-                if epoch % (self.args.eval_freq * 2) == 0:  # Less frequent play
+                if epoch % self.args.eval_freq == 0:  # Less frequent play
                     self.play_in_environment(epoch)
             else:
                 val_metrics = {}
@@ -1033,15 +1181,15 @@ class FlowBCTrainer:
             epoch_metrics["learning_rate"] = new_lr  # Log current learning rate
 
             if self.run:
-                self.run.log(epoch_metrics, step=epoch)
+                self.run.log(epoch_metrics, step=(epoch + 1) * len(self.train_loader))
 
             # Save checkpoints
             if epoch % self.args.save_freq == 0:
-                ckpt_path = os.path.join(self.args.ckpt_dir, f"epoch_{epoch}.pt")
+                ckpt_path = os.path.join(self.ckpt_dir, f"epoch_{epoch}.pt")
                 self._save_checkpoint(ckpt_path, epoch, is_best=False)
 
             if is_best:
-                best_path = os.path.join(self.args.ckpt_dir, "best.pt")
+                best_path = os.path.join(self.ckpt_dir, "best.pt")
                 self._save_checkpoint(best_path, epoch, is_best=True)
 
             # Print epoch summary (Lightning style)
