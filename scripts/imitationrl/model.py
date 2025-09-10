@@ -13,6 +13,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+
 class TinyCNN(nn.Module):
     """Light image encoder: (C,H,W) -> d_model_img."""
 
@@ -114,20 +115,18 @@ class SeqFlowPolicy(nn.Module):
     def encode_images(self, image_seq: torch.Tensor) -> torch.Tensor:
         # image_seq: (B, T, C, H, W)
         B, T = image_seq.size(0), image_seq.size(1)
-        images = image_seq.view(B * T, *image_seq.shape[2:])
-        try:
-            images = images.contiguous(memory_format=torch.channels_last)
-        except Exception:
-            pass
+        images = image_seq.view(B * T, *image_seq.shape[2:]).contiguous(
+            memory_format=torch.channels_last
+        )
         feats = self.image_encoder(images)
         return feats.view(B, T, -1)
 
     def encode_states(self, state_seq: torch.Tensor) -> torch.Tensor:
         # state_seq: (B, T, S)
         B, T = state_seq.size(0), state_seq.size(1)
-        states = state_seq.view(B * T, -1)
+        states = state_seq.view(B, T, -1)
         feats = self.state_encoder(states)
-        return feats.view(B, T, -1)
+        return feats
 
     def encode_obs(
         self, state_seq: Optional[torch.Tensor], image_seq: Optional[torch.Tensor]
@@ -171,6 +170,7 @@ class SeqFlowPolicy(nn.Module):
             x = x + dt * v
         x = torch.clamp(x, min=-1.0, max=1.0)
         return x
+
 
 def prepare_batch(batch: Dict[str, torch.Tensor], device: torch.device, modality: str):
     """Move batch to device and select the proper tensors.
