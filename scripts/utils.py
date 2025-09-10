@@ -2,6 +2,7 @@ import argparse
 import os
 import random
 from dataclasses import asdict, fields
+from typing import get_type_hints
 
 import gymnasium as gym
 import torch.distributed as dist
@@ -16,6 +17,17 @@ import numpy as np
 import torch
 import yaml
 from termcolor import colored
+
+__all__ = [
+    "EmpiricalNormalization",
+    "RewardNormalizer",
+    "load_args",
+    "make_isaaclab_env",
+    "mark_step",
+    "print_dict",
+    "save_params",
+    "seed_everything",
+]
 
 
 def callable_to_string(func):
@@ -60,10 +72,19 @@ def _dataclass_to_argparse(parser, dataclass_type, prefix="", defaults=None):
     """
     Add arguments to parser from dataclass fields. Optionally use a prefix for nested dataclasses.
     """
+    # Resolve forward references (e.g., from `from __future__ import annotations`)
+    try:
+        resolved_hints = get_type_hints(dataclass_type)
+    except Exception:
+        resolved_hints = {}
+
     for f in fields(dataclass_type):
         arg_name = f"--{prefix}{f.name}"
-        arg_type = f.type
-        print(prefix, f.name, arg_name)
+        arg_type = resolved_hints.get(f.name, f.type)
+        # Map string annotations like 'str' to real types
+        if isinstance(arg_type, str):
+            builtin_map = {"str": str, "int": int, "float": float, "bool": bool}
+            arg_type = builtin_map.get(arg_type, str)
         default = getattr(defaults, f.name) if defaults is not None else f.default
         # Handle bools as store_true/store_false
         if arg_type is bool:
@@ -76,9 +97,11 @@ def _dataclass_to_argparse(parser, dataclass_type, prefix="", defaults=None):
                     arg_name, action="store_true", dest=f.name, help="(default: False)"
                 )
         else:
+            # Fallback to str if the type isn't a callable parser
+            parser_type = arg_type if callable(arg_type) else str
             parser.add_argument(
                 arg_name,
-                type=arg_type,
+                type=parser_type,
                 default=argparse.SUPPRESS,
                 help=f"(default: {default})",
             )

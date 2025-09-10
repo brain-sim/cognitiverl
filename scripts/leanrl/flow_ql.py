@@ -124,7 +124,7 @@ class ExperimentArgs:
     # Agent config
     obs_type: str = "image"
     """the type of the observations"""
-    algorithm: str = "fast_td3"
+    algorithm: str = "flowql"
     """the algorithm to use"""
     img_size: list[int] = [3, 32, 32]
     """the size of the image"""
@@ -135,6 +135,8 @@ class ExperimentArgs:
 
     q_chunk: bool = False
     """whether to use q chunk"""
+    flow_steps: int = 10
+    """the number of steps for flow integration"""
     compile: bool = False
     """use torch.compile"""
     compile_mode: str = "reduce-overhead"
@@ -383,6 +385,7 @@ def main(args):
 
     # Copy params to actor_detach without grad
     from_module(actor).data.to_module(actor_detach)
+
     policy = actor_detach.explore
 
     q_optimizer = optim.AdamW(
@@ -489,9 +492,9 @@ def main(args):
                 bootstrap = (time_outs | ~dones).float()
             else:
                 bootstrap = (~dones).float()
-            next_state_actions = (actor(next_observations) + clipped_noise).clamp(
-                action_low, action_high
-            )
+            next_state_actions = (
+                actor.sample_actions(next_observations) + clipped_noise
+            ).clamp(action_low, action_high)
             if next_state_actions.isinf().any():
                 raise ValueError("next_state_actions inf")
             discount = args.gamma ** data["effective_n_steps"]
@@ -555,18 +558,54 @@ def main(args):
         return log_dict
 
     def update_pol(data, log_dict):
+        # TODO: Ensure actor has: actor.bc_flow(obs, x_t, t) -> vel_pred
         with autocast(
             device_type=amp_device_type, dtype=amp_dtype, enabled=amp_enabled
         ):
             observations = data["observations"]
-            qf1, qf2 = qnet(observations, actor(observations))
+            actions_batch = data["actions"]
+            batch_size, action_dim = actions_batch.shape
+
+            # Flow BC: sample x0, set x1=dataset actions, interpolate x_t, match velocities
+            x_0 = torch.randn(
+                (batch_size, action_dim),
+                device=device,
+                dtype=observations.dtype,
+            )
+            x_1 = actions_batch
+            t = torch.zeros(
+                (batch_size, 1), device=device, dtype=observations.dtype
+            ).uniform_()
+            x_t = (1.0 - t) * x_0 + t * x_1
+            vel = x_1 - x_0
+
+            # Predicted velocity field at x_t
+            pred_vel = actor.multi_step_forward(observations, x_t, t)
+            bc_flow_loss = ((pred_vel - vel) ** 2).mean()
+
+            noises = torch.randn(
+                (batch_size, action_dim),
+                device=device,
+                dtype=observations.dtype,
+            )
+            with torch.no_grad():
+                target_flow_actions = actor.compute_flow_actions(observations, noises)
+            single_step_flow_actions = actor.single_step_forward(observations, noises)
+            single_step_flow_actions = torch.clamp(
+                single_step_flow_actions, min=action_low, max=action_high
+            )
+            distill_loss = F.mse_loss(single_step_flow_actions, target_flow_actions)
+
+            qf1, qf2 = qnet(observations, single_step_flow_actions)
             qf1_value = qnet.get_value(F.softmax(qf1, dim=-1))
             qf2_value = qnet.get_value(F.softmax(qf2, dim=-1))
             if args.use_cdq:
                 qf_value = torch.minimum(qf1_value, qf2_value)
             else:
                 qf_value = (qf1_value + qf2_value) / 2.0
-            actor_loss = -qf_value.mean()
+            qf_loss = -qf_value.mean()
+            actor_loss = bc_flow_loss + 5 * distill_loss + qf_loss
+
         actor_optimizer.zero_grad(set_to_none=True)
         scaler.scale(actor_loss).backward()
         scaler.unscale_(actor_optimizer)
@@ -581,7 +620,10 @@ def main(args):
 
         scaler.step(actor_optimizer)
         scaler.update()
+
+        # Logging
         log_dict["actor_loss"] = actor_loss.detach()
+        log_dict["bc_flow_loss"] = bc_flow_loss.detach()
         log_dict["actor_grad_norm"] = actor_grad_norm.detach()
         return log_dict
 
@@ -637,10 +679,10 @@ def main(args):
         ):
             norm_obs = normalize_obs(obs)
             if args.q_chunk:
-                actions = policy(obs=norm_obs, dones=dones)
+                actions = policy(obs=norm_obs, dones=dones, steps=args.flow_steps)
                 actions = actions.reshape(actions.shape[0], horizon, -1)
             else:
-                actions = policy(obs=norm_obs, dones=dones)
+                actions = policy(obs=norm_obs, dones=dones, steps=args.flow_steps)
             actions = torch.clamp(actions, action_low, action_high)
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook

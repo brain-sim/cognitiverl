@@ -24,10 +24,11 @@ simulation_app = app_launcher.app
 
 """Rest everything follows."""
 
-import gymnasium as gym
-from prettytable import PrettyTable
-
 import cognitiverl.tasks  # noqa: F401
+import gymnasium as gym
+import isaaclab_tasks  # noqa: F401
+import isaaclab_tasks.manager_based.manipulation.pick_place  # noqa: F401
+from prettytable import PrettyTable
 
 
 def main():
@@ -44,7 +45,7 @@ def main():
     index = 0
     # acquire all Isaac environments names
     for task_spec in gym.registry.values():
-        if "Nav" in task_spec.id:
+        if "Isaac" in task_spec.id or "Nav" in task_spec.id:
             # add details to table
             table.add_row(
                 [

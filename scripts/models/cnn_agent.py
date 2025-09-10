@@ -550,3 +550,191 @@ class CNNFastTD3Actor(nn.Module):
 
         noise = torch.randn_like(act) * self.noise_scales
         return act + noise
+
+
+class CNNFlowQActor(nn.Module):
+    """Flow Q-Learning Actor with separate SingleStep and MultiStep networks"""
+
+    def __init__(
+        self,
+        n_obs: int,
+        n_act: int,
+        num_envs: int,
+        init_scale: float,
+        horizon: int = 1,
+        img_size: List[int] = [3, 32, 32],
+        hidden_dims: list[int] = [512, 256, 128],
+        activation: type[nn.Module] = nn.ReLU,
+        output_activation: type[nn.Module] | None = nn.Tanh,
+        std_min: float = 0.05,
+        std_max: float = 0.5,
+        device: torch.device = torch.device("cpu"),
+        dtype: torch.dtype = torch.float32,
+        flow_steps: int = 10,
+    ):
+        super().__init__()
+        self.n_act = n_act
+        self.horizon = horizon
+        channels, height, width = img_size
+        self.img_size = (channels, height, width)
+        self.dtype = dtype
+        self.device = device
+        self.flow_steps = flow_steps
+        self._setup_backbone(channels)
+
+        # SingleStep Network: obs_features + noise -> velocity (no time)
+        single_step_layers = []
+        for i in range(len(hidden_dims)):
+            if i == 0:
+                # obs_features + noise (no time component)
+                single_step_layers.append(
+                    nn.Linear(self.feature_size + self.n_act, hidden_dims[i])
+                )
+            else:
+                single_step_layers.append(nn.Linear(hidden_dims[i - 1], hidden_dims[i]))
+            single_step_layers.append(activation())
+
+        self.single_step_net = nn.Sequential(*single_step_layers)
+        self.single_step_fc_mu = nn.Sequential(
+            nn.Linear(hidden_dims[-1], n_act * horizon),
+            output_activation() if output_activation is not None else nn.Identity(),
+        )
+
+        # MultiStep Network: obs_features + actions + time -> velocity
+        multi_step_layers = []
+        for i in range(len(hidden_dims)):
+            if i == 0:
+                # obs_features + actions + time
+                multi_step_layers.append(
+                    nn.Linear(self.feature_size + self.n_act + 1, hidden_dims[i])
+                )
+            else:
+                multi_step_layers.append(nn.Linear(hidden_dims[i - 1], hidden_dims[i]))
+            multi_step_layers.append(activation())
+
+        self.multi_step_net = nn.Sequential(*multi_step_layers)
+        self.multi_step_fc_mu = nn.Sequential(
+            nn.Linear(hidden_dims[-1], n_act * horizon),
+            output_activation() if output_activation is not None else nn.Identity(),
+        )
+
+        # Initialize both networks
+        nn.init.normal_(self.single_step_fc_mu[0].weight, 0.0, init_scale)
+        nn.init.constant_(self.single_step_fc_mu[0].bias, 0.0)
+        nn.init.normal_(self.multi_step_fc_mu[0].weight, 0.0, init_scale)
+        nn.init.constant_(self.multi_step_fc_mu[0].bias, 0.0)
+
+        # Move to device
+        self.single_step_net.to(device)
+        self.single_step_fc_mu.to(device)
+        self.multi_step_net.to(device)
+        self.multi_step_fc_mu.to(device)
+
+        noise_scales = (
+            torch.rand(num_envs, 1, device=device) * (std_max - std_min) + std_min
+        )
+        self.register_buffer("noise_scales", noise_scales)
+        self.register_buffer("std_min", torch.as_tensor(std_min, device=device))
+        self.register_buffer("std_max", torch.as_tensor(std_max, device=device))
+        self.n_envs = num_envs
+        self.device = device
+
+    @torch.no_grad()
+    def _setup_backbone(self, channels: int):
+        """Setup MobileNetV3 backbone."""
+        self.backbone = mobilenet_v3_small(weights=MobileNet_V3_Small_Weights.DEFAULT)
+        self.backbone.eval()
+
+        # Adjust first conv layer
+        self.backbone.features[0][0] = nn.Conv2d(
+            in_channels=channels,
+            out_channels=16,
+            kernel_size=3,
+            stride=2,
+            padding=1,
+            bias=False,
+        )
+        self.backbone = nn.Sequential(*list(self.backbone.features))
+        self.backbone.to(dtype=self.dtype, device=self.device)
+
+        # Get feature size
+        dummy = torch.zeros(1, *self.img_size, device=self.device, dtype=self.dtype)
+        self.feature_size = self.backbone(dummy).view(1, -1).size(1)
+
+    @torch.no_grad()
+    def _extract_features(self, x: torch.Tensor) -> torch.Tensor:
+        """Extract features from image input."""
+        batch_size = x.size(0)
+        c, h, w = self.img_size
+        imgs = x[:, : c * h * w].view(batch_size, c, h, w)
+        features = self.backbone(imgs)
+        return features.view(batch_size, -1)
+
+    def single_step_forward(
+        self, obs: torch.Tensor, actions: torch.Tensor
+    ) -> torch.Tensor:
+        """SingleStep: f(obs, noise) -> velocity (no time)"""
+        features = self._extract_features(obs)
+        x = torch.cat([features, actions], dim=-1)
+        x = self.single_step_net(x)
+        x = self.single_step_fc_mu(x)
+        return x
+
+    def multi_step_forward(
+        self, obs: torch.Tensor, actions: torch.Tensor, t: torch.Tensor
+    ) -> torch.Tensor:
+        """MultiStep: f(obs, actions, t) -> velocity (with time)"""
+        features = self._extract_features(obs)
+        x = torch.cat([features, actions, t], dim=-1)
+        x = self.multi_step_net(x)
+        x = self.multi_step_fc_mu(x)
+        return x
+
+    def forward(self, obs: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        """Default forward for backward compatibility - uses MultiStep"""
+        return self.single_step_forward(obs, actions)
+
+    def sample_actions(self, obs: torch.Tensor) -> torch.Tensor:
+        """SingleStep: Direct noise -> action mapping (no integration loop)"""
+        batch = obs.shape[0]
+        dtype = obs.dtype
+        device = obs.device
+
+        # Sample noise
+        noise = torch.randn((batch, self.n_act), device=device, dtype=dtype)
+
+        # Direct mapping: noise -> velocity -> action
+        act = self.single_step_forward(obs, noise)
+        return act
+
+    def compute_flow_actions(
+        self, obs: torch.Tensor, act: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        """MultiStep: Integration loop with time"""
+        batch = obs.shape[0]
+        dtype = obs.dtype
+        device = obs.device
+
+        # Start from noise
+        if act is None:
+            act = torch.randn((batch, self.n_act), device=device, dtype=dtype)
+        dt = 1.0 / float(self.flow_steps)
+
+        # Multi-step integration with time
+        for i in range(self.flow_steps):
+            t = torch.full((batch, 1), i * dt, device=device, dtype=dtype)
+            vel = self.multi_step_forward(obs, act, t)
+            act = act + dt * vel
+
+        return act
+
+    def explore(self, obs, dones=None, steps=None, deterministic: bool = False):
+        """Use SingleStep for exploration (fast, no integration loop)"""
+        # Always use single step for exploration - direct mapping
+        act = self.sample_actions(obs)
+
+        if deterministic:
+            return act
+
+        noise = torch.randn_like(act) * self.noise_scales
+        return act + noise

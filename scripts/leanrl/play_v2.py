@@ -70,7 +70,7 @@ class ExperimentArgs:
     device: str = "cuda:0"
     """device to use for training"""
 
-    checkpoint_path: str = "/home/chandramouli/cognitiverl/wandb/run-20250801_045221-hcivgreo/files/checkpoints/ckpt_10000.pt"
+    checkpoint_path: str = "/home/chandramouli/cognitiverl/wandb/run-20250724_115123-1zx3hbil/files/checkpoints/ckpt_6400.pt"
     """path to the checkpoint to load"""
     num_eval_envs: int = 32
     """number of environments to run for evaluation/play."""
@@ -297,9 +297,7 @@ def main(args):
                 else:
                     action_chunk = play_agent(obs)
             action_chunk = action_chunk.reshape(args.num_eval_envs, horizon, -1)
-            print(action_chunk.shape)
             action = action_chunk[:, step % horizon]
-            print(step % horizon)
             obs, _, done, _ = eval_envs.step(action)
             step += 1
             global_step += args.num_eval_envs

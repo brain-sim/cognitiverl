@@ -10,13 +10,25 @@ try:
 except ImportError:
     pass
 
+# A generic mechanism for turning a JAX function into a PyTorch function.
+from typing import Dict
+
 import numpy as np
 import torch
 import torch.utils.dlpack
 from gymnasium import Wrapper
 from isaaclab.envs import DirectRLEnv, ManagerBasedRLEnv
 
-# A generic mechanism for turning a JAX function into a PyTorch function.
+
+def _apply_nan_to_num(
+    x: torch.Tensor | Dict[str, torch.Tensor],
+) -> torch.Tensor | Dict[str, torch.Tensor]:
+    if isinstance(x, torch.Tensor):
+        return x.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
+    elif isinstance(x, dict):
+        return {k: _apply_nan_to_num(v) for k, v in x.items()}
+    else:
+        return x
 
 
 def get_video_name(env: Any) -> str | None:
@@ -220,9 +232,7 @@ class IsaacLabVecEnvWrapper(Wrapper):
             obs_dict = self.unwrapped._get_observations()
         if self.use_jax:
             obs_dict = convert_dict_to_jax(obs_dict)
-        obs_dict["policy"] = obs_dict["policy"].nan_to_num(
-            nan=0.0, posinf=0.0, neginf=0.0
-        )
+        obs_dict["policy"] = _apply_nan_to_num(obs_dict["policy"])
         return obs_dict["policy"], {"observations": obs_dict}
 
     @property
@@ -261,9 +271,7 @@ class IsaacLabVecEnvWrapper(Wrapper):
         # return observations
         if self.use_jax:
             obs_dict = convert_dict_to_jax(obs_dict)
-        obs_dict["policy"] = obs_dict["policy"].nan_to_num(
-            nan=0.0, posinf=0.0, neginf=0.0
-        )
+        obs_dict["policy"] = _apply_nan_to_num(obs_dict["policy"])
         return obs_dict["policy"], {"observations": obs_dict}
 
     def step(
@@ -294,7 +302,7 @@ class IsaacLabVecEnvWrapper(Wrapper):
             )
             extras = convert_dict_to_jax(extras)
 
-        obs = obs_dict["policy"].nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
+        obs = _apply_nan_to_num(obs_dict["policy"])
         # rew = rew.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0)
         extras["observations"] = obs_dict
         # move time out information to the extras dict

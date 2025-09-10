@@ -64,3 +64,4 @@ _build
 # Pre-Trained Checkpoints
 /.pretrained_checkpoints/
 **/*test*.pt
+**/*.hdf5
