@@ -21,7 +21,7 @@ from tqdm.auto import tqdm
 
 # Local imports
 from scripts.imitationrl.dataset import SequenceDataset
-from scripts.imitationrl.models import SeqFlowPolicy, VanillaFlowPolicy
+from scripts.imitationrl.models import VanillaFlowPolicy
 from scripts.utils import load_args, make_isaaclab_env, seed_everything
 
 try:
@@ -665,7 +665,7 @@ class FlowBCTrainer:
             device_type="cuda", enabled=self.amp_enabled, dtype=self.amp_dtype
         ):
             # Flow matching loss
-            flow_loss = self.model.compute_flow_loss(state_seq, image_seq, actions)
+            flow_loss = self.model.compute_loss(state_seq, image_seq, actions)
 
             # Sample actions for metrics (no gradients)
             with torch.no_grad():

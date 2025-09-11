@@ -157,6 +157,9 @@ class SeqFlowPolicy(nn.Module):
         v_pred = self.flow(inp)
         return F.mse_loss(v_pred, v_target, reduction="none").sum(dim=-1).mean()
 
+    def compute_loss(self, state_seq=None, image_seq=None, actions=None):
+        return self.compute_flow_loss(state_seq, image_seq, actions)
+
     @torch.no_grad()
     def sample_actions(
         self,
