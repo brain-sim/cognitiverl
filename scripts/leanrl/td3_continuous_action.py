@@ -12,9 +12,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import tqdm
-import wandb
 from isaaclab.utils import configclass
 from torchrl.data import LazyTensorStorage, ReplayBuffer
+
+import wandb
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tensordict import TensorDict
@@ -143,11 +144,10 @@ def make_env(task, seed, idx, capture_video, run_name):
 
 
 def make_isaaclab_env(task, device, num_envs, capture_video, disable_fabric, **args):
+    import cognitiverl.tasks  # noqa: F401
     import isaaclab_tasks  # noqa: F401
     from isaaclab_tasks.utils.parse_cfg import parse_env_cfg
     from wrappers import IsaacLabVecEnvWrapper
-
-    import cognitiverl.tasks  # noqa: F401
 
     def thunk():
         cfg = parse_env_cfg(

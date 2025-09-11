@@ -11,7 +11,7 @@ from isaaclab.utils import configclass
 from termcolor import colored
 
 import wandb
-from scripts.models import CNNPPOAgent
+from scripts.leanrl.models import CNNPPOAgent
 from scripts.utils import load_args, make_isaaclab_env, print_dict
 
 ### TODO : Make play callable while training and after training.

@@ -14,7 +14,7 @@ from termcolor import colored
 from torch.amp import autocast
 
 import wandb
-from scripts.models import AGENT_LOOKUP_BY_ALGORITHM
+from scripts.leanrl.models import AGENT_LOOKUP_BY_ALGORITHM
 from scripts.utils import (  # add load_args import
     EmpiricalNormalization,
     adjust_noise_scales,

@@ -22,7 +22,7 @@ from torch.amp import GradScaler, autocast
 
 import wandb
 from scripts.buffers import SimpleReplayBufferOriginal, TorchRLInfoLogger
-from scripts.models import AGENT_LOOKUP_BY_ALGORITHM
+from scripts.leanrl.models import AGENT_LOOKUP_BY_ALGORITHM
 from scripts.utils import (
     EmpiricalNormalization,
     RewardNormalizer,

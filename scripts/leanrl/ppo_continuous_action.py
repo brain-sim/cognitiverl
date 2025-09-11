@@ -14,7 +14,7 @@ from isaaclab.utils import configclass
 from termcolor import colored
 
 import wandb
-from scripts.models import CNNPPOAgent, MLPPPOAgent
+from scripts.leanrl.models import CNNPPOAgent, MLPPPOAgent
 from scripts.utils import (
     load_args,
     make_isaaclab_env,

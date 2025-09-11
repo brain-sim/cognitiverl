@@ -21,7 +21,7 @@ from tqdm.auto import tqdm
 
 # Local imports
 from scripts.imitationrl.dataset import SequenceDataset
-from scripts.imitationrl.model import SeqFlowPolicy
+from scripts.imitationrl.models import SeqFlowPolicy, VanillaFlowPolicy
 from scripts.utils import load_args, make_isaaclab_env, seed_everything
 
 try:
@@ -538,7 +538,7 @@ class FlowBCTrainer:
 
         print("🔧 Creating model...")
         try:
-            model = SeqFlowPolicy(state_dim, action_dim, self.args).to(self.device)
+            model = VanillaFlowPolicy(state_dim, action_dim, self.args).to(self.device)
             print("✅ Model created successfully")
         except Exception as e:
             print(f"❌ Model creation failed: {e}")

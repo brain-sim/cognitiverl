@@ -22,7 +22,7 @@ os.environ["TORCHDYNAMO_INLINE_INBUILT_NN_MODULES"] = "1"
 
 import os
 
-from scripts.models import CNNPPOAgent, MLPPPOAgent
+from scripts.leanrl.models import CNNPPOAgent, MLPPPOAgent
 from scripts.utils import load_args, seed_everything, set_high_precision
 
 
