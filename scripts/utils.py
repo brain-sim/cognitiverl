@@ -27,6 +27,7 @@ __all__ = [
     "print_dict",
     "save_params",
     "seed_everything",
+    "process_image_batch",  # Add the new function
 ]
 
 

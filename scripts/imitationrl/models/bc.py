@@ -191,7 +191,7 @@ class BCPolicy(nn.Module):
     def compute_loss(self, state_seq=None, image_seq=None, actions=None):
         """Compute BC loss (simple MSE)."""
         pred_actions = self.forward(state_seq, image_seq)
-        return F.mse_loss(pred_actions, actions)
+        return F.mse_loss(pred_actions, actions, reduction="none").sum(dim=-1).mean()
 
     @torch.no_grad()
     def sample_actions(

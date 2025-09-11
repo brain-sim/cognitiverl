@@ -26,7 +26,12 @@ import torchvision
 from PIL import Image
 
 from scripts.imitationrl.models import VanillaFlowPolicy  # Changed from SeqFlowPolicy
-from scripts.utils import load_args, make_isaaclab_env, seed_everything
+from scripts.imitationrl.utils import process_image_batch
+from scripts.utils import (
+    load_args,
+    make_isaaclab_env,
+    seed_everything,
+)
 
 try:
     import wandb  # type: ignore
@@ -171,95 +176,96 @@ def save_labeled_grid(
         Image.fromarray(grid_np).save(filepath)
 
 
-def save_current_observation(
+def save_obs_grid(
+    image_buffer: torch.Tensor,
+    save_path: str,
+    max_envs_to_save: int = 8,
+    max_timesteps: int = 10,
+) -> None:
+    """Save observation grid showing multiple environments and timesteps."""
+    if image_buffer is None or image_buffer.numel() == 0:
+        print("⚠️  Image buffer is empty, skipping grid save")
+        return
+
+    B, T, C, H, W = image_buffer.shape
+    num_envs_to_save = min(max_envs_to_save, B)
+    T = min(max_timesteps, T)
+
+    # Select random environments to save
+    env_indices = torch.randperm(B)[:num_envs_to_save]
+
+    # Get selected environments: (num_envs_to_save, T, C, H, W)
+    selected_envs = image_buffer[env_indices]
+
+    # Use shared image processing function
+    selected_envs = process_image_batch(
+        selected_envs, target_format="BTCHW", normalize_to_01=True
+    )
+
+    # Reshape for grid: (num_envs_to_save * T, C, H, W)
+    # We want envs as rows, timesteps as columns
+    grid_images = selected_envs.view(num_envs_to_save * T, C, H, W)
+
+    # Create grid: T columns (timesteps), num_envs_to_save rows
+    grid = torchvision.utils.make_grid(
+        grid_images,
+        nrow=T,  # T timesteps per row
+        normalize=False,  # Already normalized
+        padding=2,
+        pad_value=0.5,  # Gray padding
+    )
+
+    # Convert to PIL and save
+    grid_np = (grid.permute(1, 2, 0).cpu().numpy() * 255).astype(np.uint8)
+    Image.fromarray(grid_np).save(save_path)
+    print(f"💾 Saved observation grid ({num_envs_to_save}×{T}) to {save_path}")
+
+
+def _save_obs_for_envs(
     obs_dict: Dict,
     adapter: "ObsAdapter",
     save_dir: str,
     step: int,
-    max_envs_to_save: int = 4,
-):
-    """Save current observation as a grid: one row of current observations from multiple envs."""
-    if adapter.image_key is None:
+    max_envs_to_save: int = 8,
+) -> None:
+    """Save observations from selected environments."""
+    if adapter.image_key not in obs_dict:
         return
 
-    os.makedirs(save_dir, exist_ok=True)
+    try:
+        os.makedirs(save_dir, exist_ok=True)
 
-    # Get current observation image
-    if adapter.image_key in obs_dict:
+        # Get image observations
         img_obs = obs_dict[adapter.image_key]  # (num_envs, H, W, C)
 
         if isinstance(img_obs, torch.Tensor):
-            # Convert to (num_envs, C, H, W) and normalize
-            if img_obs.dim() == 4 and img_obs.shape[-1] in (1, 3, 4):
-                img_obs = img_obs.permute(0, 3, 1, 2)  # NHWC -> NCHW
-
-            if img_obs.max() > 1.0:
-                img_obs = img_obs.float() / 255.0
-
-            img_obs = torch.clamp(img_obs, 0.0, 1.0)
+            # Use shared image processing function
+            img_obs = process_image_batch(
+                img_obs, target_format="BCHW", normalize_to_01=True
+            )
 
             # Select environments to save
             num_envs_to_save = min(max_envs_to_save, img_obs.shape[0])
-            selected_imgs = img_obs[:num_envs_to_save]
+            env_indices = torch.randperm(img_obs.shape[0])[:num_envs_to_save]
+            selected_obs = img_obs[env_indices]  # (num_envs_to_save, C, H, W)
 
-            # Create horizontal grid: all environments in one row
-            grid = torchvision.utils.make_grid(
-                selected_imgs,
-                nrow=num_envs_to_save,  # All environments in one row
-                normalize=False,
-                padding=2,
-                pad_value=1.0,
-            )
-
-            # Convert to PIL image
-            grid_np = grid.permute(1, 2, 0).cpu().numpy()  # (H, W, C)
-            grid_np = (grid_np * 255).astype(np.uint8)
-
-            # Save grid image
-            filename = f"step_{step:04d}_current_{num_envs_to_save}envs.png"
-            filepath = os.path.join(save_dir, filename)
-
-            Image.fromarray(grid_np).save(filepath)
-
-            # Also save labeled version
-            save_current_labeled_grid(
-                grid_np, filepath.replace(".png", "_labeled.png"), num_envs_to_save
-            )
-
-
-def save_current_labeled_grid(grid_np: np.ndarray, filepath: str, num_envs: int):
-    """Save current observation grid with environment labels."""
-    try:
-        from PIL import Image, ImageDraw, ImageFont
-
-        img = Image.fromarray(grid_np)
-        draw = ImageDraw.Draw(img)
-
-        # Try to load a font
-        try:
-            font = ImageFont.truetype("DejaVuSans.ttf", 16)
-        except:
-            try:
-                font = ImageFont.truetype(
-                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16
+            # Save each environment's observation
+            for i, env_idx in enumerate(env_indices):
+                # Convert to numpy and save
+                obs_np = (selected_obs[i].permute(1, 2, 0).cpu().numpy() * 255).astype(
+                    np.uint8
                 )
-            except:
-                font = ImageFont.load_default()
+                save_path = os.path.join(
+                    save_dir, f"step{step:04d}_env{env_idx:02d}.png"
+                )
+                Image.fromarray(obs_np).save(save_path)
 
-        # Calculate image width in the grid
-        img_width = grid_np.shape[1] // num_envs
+            print(
+                f"💾 Saved {num_envs_to_save} environment observations at step {step}"
+            )
 
-        # Add environment labels
-        for env_idx in range(num_envs):
-            x_pos = env_idx * img_width + img_width // 2 - 20
-            label = f"Env {env_idx}"
-            draw.text((x_pos, 5), label, fill=(255, 0, 0), font=font)
-
-        img.save(filepath)
-
-    except Exception:
-        # If labeling fails, just save the original
-        Image.fromarray(grid_np).save(filepath)
+    except Exception as e:
+        print(f"⚠️  Error saving observations: {e}")
 
 
 @dataclass
@@ -310,33 +316,26 @@ class ObsAdapter:
         # Unwrap policy dict if present
         obs = obs_in.get("policy", obs_in)
 
-        # Build state by concatenating requested keys if present
+        # Extract state
         state_parts = []
-        for k in self.state_keys:
-            if k in obs:
-                v = self._to_tensor(obs[k])
-                v = v.view(v.shape[0], -1)  # (N, *)
-                state_parts.append(v)
+        for key in self.state_keys:
+            if key in obs:
+                val = self._to_tensor(obs[key])
+                state_parts.append(val.view(val.shape[0], -1))
+
         if state_parts:
             state = torch.cat(state_parts, dim=-1)
         else:
-            # fallback to zeros if nothing available
-            N = next(iter(obs.values())).shape[0]
-            state = torch.zeros(N, 0)
+            # Fallback to zeros if no state keys found
+            state = torch.zeros(1, self.S, device=self.device)
 
-        # Build image if key present
+        # Extract image
         image = None
         if self.image_key and self.image_key in obs:
             img = self._to_tensor(obs[self.image_key])  # likely (N,H,W,C) or (N,C,H,W)
-            if img.ndim == 4 and img.shape[-1] in (1, 3, 4):
-                # NHWC -> NCHW
-                img = img.permute(0, 3, 1, 2)
-            image = self._ensure_float(img)
-            # If integer or >1.0, scale to [0,1]
-            if not image.dtype.is_floating_point or image.max() > 1.0:
-                image = image.float()
-                if image.max() > 1.0:
-                    image = (image / 255.0).clamp(0.0, 1.0)
+
+            # Use shared image processing function
+            image = process_image_batch(img, target_format="BCHW", normalize_to_01=True)
 
             # Ensure expected channels/size if possible
             if image.shape[1] != self.C:
@@ -346,6 +345,7 @@ class ObsAdapter:
                 else:
                     repeat = (self.C + image.shape[1] - 1) // image.shape[1]
                     image = image.repeat(1, repeat, 1, 1)[:, : self.C]
+
         return state.float(), image.float() if image is not None else None
 
 
@@ -733,7 +733,7 @@ def main():
             and args.save_current_obs
             and step % args.save_image_interval == 0
         ):
-            save_current_observation(
+            _save_obs_for_envs(
                 obs_dict,
                 adapter,
                 image_save_dirs["current_obs"],

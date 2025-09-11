@@ -2,6 +2,7 @@
 
 Inspired by cleanRL/leanRL for simplicity and PyTorch Lightning for logging.
 Supports train, validation, and play phases with comprehensive metrics.
+Refactored to use TensorDict extensively for cleaner code.
 """
 
 import os
@@ -12,17 +13,25 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
-import torch.nn.functional as F
-import torchvision
 
 # IsaacLab imports
 from isaaclab.app import AppLauncher
+from tensordict import TensorDict
 from torch.utils.data import DataLoader, random_split
 from tqdm.auto import tqdm
 
 # Local imports
 from scripts.imitationrl.dataset import SequenceDataset
 from scripts.imitationrl.models import BCPolicy
+from scripts.imitationrl.utils import (
+    compute_metrics,
+    compute_random_baseline,
+    format_number,
+    get_grad_norm,
+    make_image_grid,
+    print_section_header,
+    process_image_batch,
+)
 from scripts.utils import load_args, make_isaaclab_env, seed_everything
 
 try:
@@ -72,8 +81,14 @@ class TrainArgs:
 
     # Model Architecture - ADD THESE MISSING PARAMETERS
     modality_type: str = "state+image"  # "state", "image", "state+image"
-    state_keys: List[str] = None
-    image_keys: List[str] = None
+    state_keys: Tuple[str] = (
+        "left_eef_pos",
+        "left_eef_quat",
+        "right_eef_pos",
+        "right_eef_quat",
+        "hand_joint_state",
+    )
+    image_keys: Tuple[str] = ("robot_pov_cam",)
     img_size: Tuple[int, int, int] = (3, 160, 256)  # (C, H, W)
 
     # Model hyperparameters (ADD THESE)
@@ -114,126 +129,12 @@ def get_args():
 
 
 # ============================================================================
-# Utility Functions (reusable across modalities)
-# ============================================================================
-
-
-class ObservationHandler:
-    """Clean handler for different observation modalities."""
-
-    def __init__(
-        self, modality_type: str, state_keys: List[str], image_keys: List[str]
-    ):
-        self.modality_type = modality_type
-        self.state_keys = state_keys or []
-        self.image_keys = image_keys or []
-
-    def process_batch(
-        self, batch: Dict, device: torch.device
-    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], torch.Tensor]:
-        """Process batch into (state_seq, image_seq, actions) - reusable function."""
-        # Use dataset's process_batch method
-        return batch  # Dataset already processes this
-
-    def log_shapes(self, state_seq, image_seq, actions, prefix=""):
-        """Log tensor shapes for debugging."""
-        shapes = {}
-        if state_seq is not None:
-            shapes[f"{prefix}state_shape"] = list(state_seq.shape)
-        if image_seq is not None:
-            shapes[f"{prefix}image_shape"] = list(image_seq.shape)
-        shapes[f"{prefix}action_shape"] = list(actions.shape)
-        return shapes
-
-
-def compute_metrics(
-    pred_actions: torch.Tensor, target_actions: torch.Tensor
-) -> Dict[str, float]:
-    """Compute MSE and cosine similarity between predictions and targets."""
-    mse = F.mse_loss(pred_actions, target_actions).item()
-
-    # Cosine similarity (higher is better)
-    pred_flat = pred_actions.view(pred_actions.size(0), -1)
-    target_flat = target_actions.view(target_actions.size(0), -1)
-    cosine_sim = F.cosine_similarity(pred_flat, target_flat, dim=1).mean().item()
-
-    return {"mse": mse, "cosine_similarity": cosine_sim}
-
-
-def compute_random_baseline(target_actions: torch.Tensor) -> Dict[str, float]:
-    """Compute metrics against random baseline."""
-    random_actions = torch.randn_like(target_actions)
-    return compute_metrics(random_actions, target_actions)
-
-
-def make_image_grid(
-    images: torch.Tensor, nrow: int = 4, max_images: int = 8
-) -> torch.Tensor:
-    """Create image grid for logging (handles different formats).
-
-    For sequence data: creates grid with samples as rows and timesteps as columns.
-    """
-    if images.dim() == 5:  # (B, T, C, H, W) - sequence format
-        B, T, C, H, W = images.shape
-        num_samples = min(max_images, B)
-
-        # Select samples and reshape for grid: (num_samples * T, C, H, W)
-        selected_images = images[:num_samples]  # (num_samples, T, C, H, W)
-
-        # Reshape to show samples as rows, timesteps as columns
-        grid_images = selected_images.view(num_samples * T, C, H, W)
-
-        # Create grid with T columns (timesteps) and num_samples rows
-        grid = torchvision.utils.make_grid(
-            grid_images,
-            nrow=T,  # T timesteps per row
-            normalize=True,
-            value_range=(0, 1) if grid_images.max() <= 1.0 else None,
-        )
-        return grid
-
-    elif images.dim() == 4:  # (B, C, H, W) - single timestep
-        if images.size(1) > 8:  # Likely (B, T*C, H, W) - need to reshape
-            B, TxC, H, W = images.shape
-            T = TxC // 3  # Assume 3 channels
-            images = images.view(B, T, 3, H, W)
-            # Now treat as sequence format
-            return make_image_grid(images, nrow=nrow, max_images=max_images)
-        else:
-            # Regular (B, C, H, W) format
-            images = images[:max_images]
-
-    # Normalize to [0, 1] if needed
-    if images.max() > 1.0:
-        images = images / 255.0
-
-    return torchvision.utils.make_grid(images, nrow=nrow, normalize=True)
-
-
-def print_section_header(title: str, char: str = "=", width: int = 80):
-    """Print a nice section header."""
-    print(f"\n{char * width}")
-    print(f" {title}")
-    print(f"{char * width}")
-
-
-def format_number(num):
-    """Format large numbers with K/M suffixes."""
-    if num >= 1_000_000:
-        return f"{num / 1_000_000:.1f}M"
-    elif num >= 1_000:
-        return f"{num / 1_000:.1f}K"
-    else:
-        return str(num)
-
-
-# ============================================================================
-# Main Trainer Class
+# Main Trainer Class (Simplified with TensorDict)
 # ============================================================================
 
 
 class FlowBCTrainer:
-    """Clean trainer class inspired by cleanRL with PyTorch Lightning logging."""
+    """Clean trainer class using TensorDict extensively for simplified data handling."""
 
     def __init__(self, args: TrainArgs):
         self.args = args
@@ -265,11 +166,6 @@ class FlowBCTrainer:
 
         # Print model info (now that everything is set up)
         self._print_model_info()
-
-        # Observation handler
-        self.obs_handler = ObservationHandler(
-            args.modality_type, args.state_keys, args.image_keys
-        )
 
         # Setup environment for play
         self._setup_environment()
@@ -307,30 +203,23 @@ class FlowBCTrainer:
         print(f"📌 Pin memory: {self.args.pin_memory}")
         print("🎲 Shuffle train: True")
 
-        # Sample data info
+        # Sample data info using TensorDict
         sample = self.dataset[0]
-        state_seq, image_seq, actions = self.dataset.process_batch(
-            {
-                k: torch.from_numpy(np.array([v]))
-                if isinstance(v, np.ndarray)
-                else {
-                    obs_k: torch.from_numpy(np.array([obs_v]))
-                    for obs_k, obs_v in v.items()
-                }
-                for k, v in sample.items()
-            },
-            self.device,
-        )
+        batch_sample = self._prepare_single_sample(sample)
+        tensor_dict = self.dataset.process_batch(batch_sample, self.device)
 
         print("\n📏 Data Shapes & Types:")
-        if state_seq is not None:
+        if tensor_dict["state_seq"] is not None:
+            state_seq = tensor_dict["state_seq"]
             print(
                 f"  🔢 State: {list(state_seq.shape)} | {state_seq.dtype} | {state_seq.device}"
             )
-        if image_seq is not None:
+        if tensor_dict["image_seq"] is not None:
+            image_seq = tensor_dict["image_seq"]
             print(
                 f"  🖼️  Image: {list(image_seq.shape)} | {image_seq.dtype} | {image_seq.device}"
             )
+        actions = tensor_dict["actions"]
         print(
             f"  🎯 Action: {list(actions.shape)} | {actions.dtype} | {actions.device}"
         )
@@ -344,16 +233,36 @@ class FlowBCTrainer:
 
         # Keys info
         if self.args.modality_type in ("state", "state+image"):
-            print(f"\n🔑 State keys: {self.dataset.state_keys}")
+            print(f"\n🔑 State keys (exact order): {self.dataset.state_keys}")
         if self.args.modality_type in ("image", "state+image"):
             print(f"🖼️  Image keys: {self.dataset.image_keys}")
+
+    def _prepare_single_sample(self, sample: Dict) -> Dict:
+        """Prepare a single sample for batch processing."""
+        if isinstance(sample.get("obs"), dict):
+            # Handle robomimic format
+            obs_batch = {}
+            for key, value in sample["obs"].items():
+                obs_batch[key] = torch.from_numpy(np.array([value])).to(self.device)
+            return {
+                "obs": obs_batch,
+                "actions": torch.from_numpy(np.array([sample["actions"]])).to(
+                    self.device
+                ),
+            }
+        else:
+            # Handle other formats
+            return {
+                k: torch.from_numpy(np.array([v])) if isinstance(v, np.ndarray) else v
+                for k, v in sample.items()
+            }
 
     def _print_model_info(self):
         """Print comprehensive model information."""
         print_section_header("🤖 MODEL INFORMATION")
 
         # Model architecture
-        print("🏗️  Model: SeqFlowPolicy")
+        print(f"🏗️  Model: {self.model.__class__.__name__}")
         print(f"🎯 Device: {self.device}")
 
         # Mixed precision info (with safe access)
@@ -441,7 +350,7 @@ class FlowBCTrainer:
 
     def _setup_dataset(self):
         """Setup dataset with action normalization."""
-        # Default keys
+        # Default keys (maintains exact order as specified)
         state_keys = self.args.state_keys or [
             "left_eef_pos",
             "left_eef_quat",
@@ -502,38 +411,19 @@ class FlowBCTrainer:
         # Infer dimensions from sample - Fix the processing
         try:
             sample = self.dataset[0]
+            batch_sample = self._prepare_single_sample(sample)
+            tensor_dict = self.dataset.process_batch(batch_sample, self.device)
 
-            # Create a proper batch format for processing
-            if isinstance(sample.get("obs"), dict):
-                # Handle robomimic format
-                obs_batch = {}
-                for key, value in sample["obs"].items():
-                    obs_batch[key] = torch.from_numpy(np.array([value])).to(self.device)
-                batch_sample = {
-                    "obs": obs_batch,
-                    "actions": torch.from_numpy(np.array([sample["actions"]])).to(
-                        self.device
-                    ),
-                }
-            else:
-                # Handle other formats
-                batch_sample = {
-                    k: torch.from_numpy(np.array([v]))
-                    if isinstance(v, np.ndarray)
-                    else v
-                    for k, v in sample.items()
-                }
-
-            state_seq, image_seq, actions = self.dataset.process_batch(
-                batch_sample, self.device
+            action_dim = tensor_dict["actions"].shape[-1]
+            state_dim = (
+                tensor_dict["state_seq"].shape[-1]
+                if tensor_dict["state_seq"] is not None
+                else 0
             )
 
-            action_dim = actions.shape[-1]
-            state_dim = state_seq.shape[-1] if state_seq is not None else 0
-
             # Update img_size from actual data
-            if image_seq is not None:
-                self.args.img_size = image_seq.shape[-3:]
+            if tensor_dict["image_seq"] is not None:
+                self.args.img_size = tensor_dict["image_seq"].shape[-3:]
 
             print(
                 f"✅ Inferred dimensions: state_dim={state_dim}, action_dim={action_dim}"
@@ -623,7 +513,6 @@ class FlowBCTrainer:
         }
 
         torch.save(checkpoint, path)
-        # Removed automatic artifact logging - only log best checkpoint at end
 
     def _log_best_checkpoint_artifact(self):
         """Log the best checkpoint as a WandB artifact at the end of training."""
@@ -676,11 +565,11 @@ class FlowBCTrainer:
         print(f"📈 Current learning rate: {current_lr:.2e}")
 
     def train_step(self, batch: Dict) -> Dict[str, float]:
-        """Single training step with flow matching loss."""
+        """Single training step with flow matching loss using TensorDict."""
         self.model.train()
 
-        # Process batch
-        state_seq, image_seq, actions = self.dataset.process_batch(batch, self.device)
+        # Process batch into TensorDict - dataset ensures state concatenation order
+        tensor_dict = self.dataset.process_batch(batch, self.device)
 
         # Forward pass with mixed precision
         self.optimizer.zero_grad(set_to_none=True)
@@ -688,13 +577,19 @@ class FlowBCTrainer:
         with torch.amp.autocast(
             device_type="cuda", enabled=self.amp_enabled, dtype=self.amp_dtype
         ):
-            # Flow matching loss
-            flow_loss = self.model.compute_loss(state_seq, image_seq, actions)
+            # Flow matching loss - model receives exact state concatenation order
+            flow_loss = self.model.compute_loss(
+                tensor_dict["state_seq"],
+                tensor_dict["image_seq"],
+                tensor_dict["actions"],
+            )
 
             # Sample actions for metrics (no gradients)
             with torch.no_grad():
                 pred_actions = self.model.sample_actions(
-                    state_seq, image_seq, steps=self.args.flow_steps
+                    tensor_dict["state_seq"],
+                    tensor_dict["image_seq"],
+                    steps=self.args.flow_steps,
                 )
 
         # Backward pass
@@ -706,8 +601,8 @@ class FlowBCTrainer:
 
         # Compute metrics
         with torch.no_grad():
-            metrics = compute_metrics(pred_actions, actions)
-            random_metrics = compute_random_baseline(actions)
+            metrics = compute_metrics(pred_actions, tensor_dict["actions"])
+            random_metrics = compute_random_baseline(tensor_dict["actions"])
 
             step_metrics = {
                 "train_step/flow_loss": flow_loss.item(),
@@ -721,23 +616,25 @@ class FlowBCTrainer:
 
     @torch.no_grad()
     def val_step(self, batch: Dict) -> Dict[str, float]:
-        """Single validation step with action sampling."""
+        """Single validation step with action sampling using TensorDict."""
         self.model.eval()
 
-        # Process batch
-        state_seq, image_seq, actions = self.dataset.process_batch(batch, self.device)
+        # Process batch into TensorDict - dataset ensures state concatenation order
+        tensor_dict = self.dataset.process_batch(batch, self.device)
 
         with torch.amp.autocast(
             device_type="cuda", enabled=self.amp_enabled, dtype=self.amp_dtype
         ):
-            # Sample actions (main validation metric)
+            # Sample actions (main validation metric) - model receives exact state concatenation order
             pred_actions = self.model.sample_actions(
-                state_seq, image_seq, steps=self.args.val_flow_steps
+                tensor_dict["state_seq"],
+                tensor_dict["image_seq"],
+                steps=self.args.val_flow_steps,
             )
 
         # Compute metrics
-        metrics = compute_metrics(pred_actions, actions)
-        random_metrics = compute_random_baseline(actions)
+        metrics = compute_metrics(pred_actions, tensor_dict["actions"])
+        random_metrics = compute_random_baseline(tensor_dict["actions"])
 
         step_metrics = {
             "val_step/pred_mse": metrics["mse"],
@@ -777,14 +674,14 @@ class FlowBCTrainer:
         running_loss = 0.0
         running_mse = 0.0
         running_cos_sim = 0.0
+        # Update running averages with more recent bias
+        alpha = 0.1  # smoothing factor
 
         for step, batch in enumerate(pbar):
             # Training step
             step_metrics = self.train_step(batch)
             epoch_metrics.append(step_metrics)
 
-            # Update running averages with more recent bias
-            alpha = 0.1  # smoothing factor
             running_loss = (1 - alpha) * running_loss + alpha * step_metrics[
                 "train_step/flow_loss"
             ]
@@ -807,7 +704,7 @@ class FlowBCTrainer:
                     "mse": f"{running_mse:.3f}",
                     "cos_sim": f"{running_cos_sim:.3f}",
                     "lr": f"{self.optimizer.param_groups[0]['lr']:.0e}",  # Shorter format
-                    "gn": f"{self._get_grad_norm():.2f}",
+                    "gn": f"{get_grad_norm(self.model):.2f}",
                 }
             )
 
@@ -819,18 +716,6 @@ class FlowBCTrainer:
             )
 
         return avg_metrics
-
-    def _get_grad_norm(self) -> float:
-        """Get gradient norm for monitoring."""
-        try:
-            total_norm = 0
-            for p in self.model.parameters():
-                if p.grad is not None:
-                    param_norm = p.grad.data.norm(2)
-                    total_norm += param_norm.item() ** 2
-            return total_norm ** (1.0 / 2)
-        except:
-            return 0.0
 
     @torch.no_grad()
     def val_epoch(self, epoch: int) -> Dict[str, float]:
@@ -844,16 +729,6 @@ class FlowBCTrainer:
             "state+image",
         ):
             self._log_image_grid(epoch, "val_epoch", self.step_counter)
-
-        # Lightning-style progress bar
-        pbar = tqdm(
-            self.val_loader,
-            desc="🔍 Validating",
-            leave=False,
-            ncols=140,
-            position=1,
-            bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}",
-        )
 
         # Get terminal width and set appropriate ncols
         terminal_width = shutil.get_terminal_size().columns
@@ -870,6 +745,7 @@ class FlowBCTrainer:
 
         running_mse = 0.0
         running_cos_sim = 0.0
+        alpha = 0.1
 
         for step, batch in enumerate(pbar):
             # Validation step
@@ -877,11 +753,12 @@ class FlowBCTrainer:
             epoch_metrics.append(step_metrics)
 
             # Update running averages
-            alpha = 0.1
-            running_mse = 0.9 * running_mse + 0.1 * step_metrics["val_step/pred_mse"]
-            running_cos_sim = (
-                0.9 * running_cos_sim + 0.1 * step_metrics["val_step/pred_cosine_sim"]
-            )
+            running_mse = (1 - alpha) * running_mse + alpha * step_metrics[
+                "val_step/pred_mse"
+            ]
+            running_cos_sim = (1 - alpha) * running_cos_sim + alpha * step_metrics[
+                "val_step/pred_cosine_sim"
+            ]
 
             if self.run:
                 self.run.log(step_metrics, step=self.step_counter)
@@ -905,7 +782,7 @@ class FlowBCTrainer:
         return avg_metrics
 
     def _log_image_grid(self, epoch: int, split: str, step: int):
-        """Log image grid for visualization with samples as rows, timesteps as columns."""
+        """Log image grid for visualization using TensorDict."""
         if self.args.modality_type not in ("image", "state+image"):
             return
 
@@ -913,11 +790,13 @@ class FlowBCTrainer:
         loader = self.train_loader if split.startswith("train") else self.val_loader
         batch = next(iter(loader))
 
-        # Process batch
-        state_seq, image_seq, actions = self.dataset.process_batch(batch, self.device)
+        # Process batch into TensorDict
+        tensor_dict = self.dataset.process_batch(batch, self.device)
 
-        if image_seq is None:
+        if tensor_dict["image_seq"] is None:
             return
+
+        image_seq = tensor_dict["image_seq"]
 
         # Select random subset (max 8 samples)
         batch_size = image_seq.size(0)
@@ -948,28 +827,148 @@ class FlowBCTrainer:
             f"✅ Logged {split} image grid: {num_samples} samples × {selected_images.size(1)} timesteps"
         )
 
+    def _init_sequence_buffers(self, initial_obs) -> TensorDict:
+        """Initialize rolling sequence buffers using TensorDict for cleaner buffer management."""
+        batch_size = self.args.num_eval_envs
+        seq_len = self.args.sequence_length * self.args.frame_stack
+
+        def init_state_buffer():
+            state_parts = [
+                initial_obs[key].view(batch_size, -1)
+                for key in self.dataset.state_keys
+                if key in initial_obs
+            ]
+            if state_parts:
+                current_state = torch.cat(state_parts, dim=-1)
+                return (
+                    current_state.unsqueeze(1)
+                    .expand(batch_size, seq_len, -1)
+                    .contiguous()
+                    .to(self.device)
+                )
+            return None
+
+        def init_image_buffer():
+            for key in self.dataset.image_keys:
+                if key in initial_obs and initial_obs[key].dim() == 4:
+                    img_data = process_image_batch(
+                        initial_obs[key], target_format="BCHW", normalize_to_01=True
+                    )
+                    return (
+                        img_data.unsqueeze(1)
+                        .expand(batch_size, seq_len, -1, -1, -1)
+                        .contiguous()
+                        .to(self.device)
+                    )
+            return None
+
+        buffer_dict = {}
+
+        # Try to initialize buffers, fall back to zeros on any error
+        try:
+            if self.args.modality_type in ("state", "state+image"):
+                buffer_dict["state_seq"] = init_state_buffer() or torch.zeros(
+                    batch_size, seq_len, 36, device=self.device
+                )
+
+            if self.args.modality_type in ("image", "state+image"):
+                C, H, W = self.args.img_size
+                buffer_dict["image_seq"] = init_image_buffer() or torch.zeros(
+                    batch_size, seq_len, C, H, W, device=self.device
+                )
+        except Exception as e:
+            print(f"⚠️  Error initializing buffers: {e}, using fallback")
+
+        return TensorDict(buffer_dict, batch_size=[batch_size])
+
+    def _update_sequence_buffers(self, obs, buffer_td: TensorDict) -> TensorDict:
+        """Update rolling sequence buffers using TensorDict for cleaner buffer management."""
+        updated_dict = {}
+
+        # Update state buffer
+        if "state_seq" in buffer_td and self.args.modality_type in (
+            "state",
+            "state+image",
+        ):
+            state_parts = [
+                obs[key].view(obs[key].shape[0], -1)
+                for key in self.dataset.state_keys
+                if key in obs
+            ]
+            if state_parts:
+                current_state = torch.cat(state_parts, dim=-1).to(self.device)
+                state_buffer = torch.roll(buffer_td["state_seq"], shifts=-1, dims=1)
+                state_buffer[:, -1, :] = current_state
+                updated_dict["state_seq"] = state_buffer
+            else:
+                updated_dict["state_seq"] = buffer_td["state_seq"]
+        else:
+            updated_dict["state_seq"] = buffer_td.get("state_seq")
+
+        # Update image buffer
+        if "image_seq" in buffer_td and self.args.modality_type in (
+            "image",
+            "state+image",
+        ):
+            current_image = None
+            for key in self.dataset.image_keys:
+                if key in obs and obs[key].dim() == 4:
+                    current_image = process_image_batch(
+                        obs[key], target_format="BCHW", normalize_to_01=True
+                    )
+                    break
+
+            if current_image is not None:
+                image_buffer = torch.roll(buffer_td["image_seq"], shifts=-1, dims=1)
+                image_buffer[:, -1, :, :, :] = current_image.to(self.device)
+                updated_dict["image_seq"] = image_buffer
+            else:
+                updated_dict["image_seq"] = buffer_td["image_seq"]
+        else:
+            updated_dict["image_seq"] = buffer_td.get("image_seq")
+
+        return TensorDict(updated_dict, batch_size=buffer_td.batch_size)
+
+    def _handle_episode_rewards(
+        self,
+        done: torch.Tensor,
+        current_rewards: torch.Tensor,
+        episode_rewards: List,
+        buffer_td: TensorDict,
+    ) -> torch.Tensor:
+        """Handle episode completion and reset buffers."""
+        for i in range(self.args.num_eval_envs):
+            if done[i]:
+                if len(episode_rewards) < 100:  # Limit logging
+                    episode_rewards.append(current_rewards[i].item())
+                current_rewards[i] = 0.0
+
+                # Reset sequence buffers for this environment using TensorDict
+                if "state_seq" in buffer_td:
+                    buffer_td["state_seq"][i] = 0.0
+                if "image_seq" in buffer_td:
+                    buffer_td["image_seq"][i] = 0.0
+        return current_rewards
+
     @torch.no_grad()
     def play_in_environment(self, epoch: int):
-        """Play model in IsaacLab environment with video recording."""
+        """Play model in IsaacLab environment using TensorDict for buffer management."""
         if self.eval_envs is None:
             print("⚠️  Environment not available, skipping play")
             return
 
         print(f"🎮 Playing model in environment (epoch {epoch})")
-
-        # Set model to eval mode
         self.model.eval()
 
-        # Reset environment
+        # Initialize environment and tracking variables
         obs, _ = self.eval_envs.reset()
         step_count = 0
         done = torch.zeros(self.args.num_eval_envs, dtype=torch.bool)
-
         episode_rewards = []
         current_rewards = torch.zeros(self.args.num_eval_envs)
 
-        # Initialize rolling buffers for sequence (similar to robomimic padding)
-        state_buffer, image_buffer = self._init_sequence_buffers(obs)
+        # Initialize rolling buffers using TensorDict
+        buffer_td = self._init_sequence_buffers(obs)
 
         play_pbar = tqdm(
             range(self.args.num_eval_steps), desc="🎮 Playing", leave=False, ncols=100
@@ -979,43 +978,33 @@ class FlowBCTrainer:
             if done.all():
                 break
 
-            # Update rolling buffers with current observation
-            state_buffer, image_buffer = self._update_sequence_buffers(
-                obs, state_buffer, image_buffer
-            )
+            # Update rolling buffers and get actions
+            buffer_td = self._update_sequence_buffers(obs, buffer_td)
 
-            # Get action from model using current sequence buffers
             with torch.amp.autocast(
                 device_type="cuda", enabled=self.amp_enabled, dtype=self.amp_dtype
             ):
+                # Extract actual tensors from TensorDict
+                state_seq = buffer_td["state_seq"] if "state_seq" in buffer_td else None
+                image_seq = buffer_td["image_seq"] if "image_seq" in buffer_td else None
+
                 pred_actions = self.model.sample_actions(
-                    state_buffer,
-                    image_buffer,
+                    state_seq,
+                    image_seq,
                     steps=self.args.val_flow_steps,
                     deterministic=True,
                 )
 
-            # Denormalize actions for environment
+            # Process actions and step environment
             if self.action_normalizer:
                 pred_actions = self.action_normalizer.denormalize(pred_actions)
+            obs, rewards, done, _ = self.eval_envs.step(pred_actions.float())
 
-            # Step environment
-            obs, rewards, done, _ = self.eval_envs.step(pred_actions)
-
-            # Track rewards
+            # Track and handle rewards/episodes
             current_rewards += rewards.cpu()
-
-            # Handle episode completion - reset buffers for completed episodes
-            for i in range(self.args.num_eval_envs):
-                if done[i]:
-                    if len(episode_rewards) < 100:  # Limit logging
-                        episode_rewards.append(current_rewards[i].item())
-                    current_rewards[i] = 0.0
-                    # Reset sequence buffers for this environment
-                    if state_buffer is not None:
-                        state_buffer[i] = 0.0
-                    if image_buffer is not None:
-                        image_buffer[i] = 0.0
+            current_rewards = self._handle_episode_rewards(
+                done, current_rewards, episode_rewards, buffer_td
+            )
 
             step_count += 1
             play_pbar.set_postfix(
@@ -1027,166 +1016,87 @@ class FlowBCTrainer:
                 }
             )
 
-        # Log play results
+        self.eval_envs.reset()
+        # Log results
         if episode_rewards and self.run:
-            play_metrics = {
-                "play/avg_reward": np.mean(episode_rewards),
-                "play/max_reward": np.max(episode_rewards),
-                "play/min_reward": np.min(episode_rewards),
-                "play/episodes_completed": len(episode_rewards),
-                "play/steps_taken": step_count,
-            }
-            self.run.log(play_metrics, step=self.step_counter)
+            self.run.log(
+                {
+                    "play/avg_reward": np.mean(episode_rewards),
+                    "play/max_reward": np.max(episode_rewards),
+                    "play/min_reward": np.min(episode_rewards),
+                    "play/episodes_completed": len(episode_rewards),
+                    "play/steps_taken": step_count,
+                },
+                step=self.step_counter,
+            )
             self.step_counter += 1
 
         print(
             f"🎯 Play completed: {len(episode_rewards)} episodes, avg reward: {np.mean(episode_rewards):.2f}"
         )
 
-    def _init_sequence_buffers(self, initial_obs):
-        """Initialize rolling sequence buffers by repeating the first observation seq_length times."""
-        batch_size = self.args.num_eval_envs
-        seq_len = self.args.sequence_length * self.args.frame_stack
+    def _handle_checkpoints_and_validation(self, epoch: int, val_metrics: Dict) -> bool:
+        """Handle validation, checkpoints, and best model tracking."""
+        is_best = False
 
-        state_buffer = None
-        image_buffer = None
+        if self.args.validation and epoch % self.args.eval_freq == 0:
+            val_metrics.update(self.val_epoch(epoch))
+            val_loss = val_metrics["val_epoch/pred_mse"]
+            is_best = val_loss < self.best_val_loss
+            if is_best:
+                self.best_val_loss = val_loss
 
-        try:
-            # Initialize state buffer if needed
-            if self.args.modality_type in ("state", "state+image"):
-                # Extract current state observation
-                state_parts = []
-                for key in self.dataset.state_keys:
-                    if key in initial_obs:
-                        obs_data = initial_obs[key]
-                        flat_data = obs_data.view(batch_size, -1)  # (B, features)
-                        state_parts.append(flat_data)
+        # Save regular checkpoint
+        if epoch % self.args.save_freq == 0:
+            ckpt_path = os.path.join(self.ckpt_dir, f"epoch_{epoch}.pt")
+            self._save_checkpoint(ckpt_path, epoch, is_best=False)
 
-                if state_parts:
-                    current_state = torch.cat(
-                        state_parts, dim=-1
-                    )  # (B, total_state_dim)
+        # Save best checkpoint
+        if self.args.validation and is_best:
+            best_path = os.path.join(self.ckpt_dir, "best.pt")
+            self._save_checkpoint(best_path, epoch, is_best=True)
 
-                    # Repeat the first observation seq_length times
-                    state_buffer = (
-                        current_state.unsqueeze(1)
-                        .expand(batch_size, seq_len, -1)
-                        .contiguous()
-                        .to(self.device)
-                    )
+        return is_best
 
-                    print(
-                        f"🔧 Initialized state buffer with repeated first obs: {state_buffer.shape}"
-                    )
+    def _handle_environment_play(self, epoch: int):
+        """Handle environment play scheduling."""
+        if self.args.validation:
+            # When validation is enabled, play less frequently after validation
+            if epoch % (self.args.eval_freq * 2) == 0:
+                self.play_in_environment(epoch)
+        else:
+            # When validation is disabled, play after every eval_freq epochs
+            if epoch % self.args.eval_freq == 0:
+                self.play_in_environment(epoch)
 
-            # Initialize image buffer if needed
-            if self.args.modality_type in ("image", "state+image"):
-                # Extract current image observation (use first available key)
-                for key in self.dataset.image_keys:
-                    if key in initial_obs:
-                        img_data = initial_obs[key]
-                        if img_data.dim() == 4:  # (B, H, W, C)
-                            # Normalize to [0, 1] if needed
-                            if img_data.max() > 1.0:
-                                img_data = img_data.float() / 255.0
+    def _log_epoch_summary(
+        self,
+        epoch: int,
+        epoch_metrics: Dict,
+        is_best: bool,
+        old_lr: float,
+        new_lr: float,
+    ):
+        """Log epoch summary and metrics."""
+        if self.run:
+            self.run.log(epoch_metrics, step=self.step_counter)
 
-                            # Convert to (B, C, H, W) format
-                            img_data = img_data.permute(0, 3, 1, 2)
+        # Print epoch summary (Lightning style)
+        metrics_str = []
+        for k, v in epoch_metrics.items():
+            if isinstance(v, float) and "time" not in k and k != "learning_rate":
+                metrics_str.append(f"{k}: {v:.4f}")
 
-                            # Repeat the first observation seq_length times
-                            image_buffer = (
-                                img_data.unsqueeze(1)
-                                .expand(batch_size, seq_len, -1, -1, -1)
-                                .contiguous()
-                                .to(self.device)
-                            )
+        status_emoji = "🏆" if is_best else "✅"
+        lr_info = f"lr: {new_lr:.1e}" if new_lr != old_lr else ""
+        validation_info = " [NO VAL]" if not self.args.validation else ""
 
-                            print(
-                                f"🔧 Initialized image buffer with repeated first obs: {image_buffer.shape}"
-                            )
-                            break
-
-        except Exception as e:
-            print(f"⚠️  Error initializing buffers: {e}")
-            print("🔧 Using fallback buffer initialization")
-
-            # Fallback initialization with zeros
-            if self.args.modality_type in ("state", "state+image"):
-                state_buffer = torch.zeros(
-                    batch_size,
-                    seq_len,
-                    36,  # fallback state dim
-                    device=self.device,
-                    dtype=torch.float32,
-                )
-
-            if self.args.modality_type in ("image", "state+image"):
-                C, H, W = self.args.img_size
-                image_buffer = torch.zeros(
-                    batch_size,
-                    seq_len,
-                    C,
-                    H,
-                    W,
-                    device=self.device,
-                    dtype=torch.float32,
-                )
-        return state_buffer, image_buffer
-
-    def _update_sequence_buffers(self, obs, state_buffer, image_buffer):
-        """Update rolling sequence buffers with new observation (robomimic-style rolling)."""
-
-        try:
-            # Update state buffer
-            if state_buffer is not None and self.args.modality_type in (
-                "state",
-                "state+image",
-            ):
-                # Extract current state observation
-                state_parts = []
-                for key in self.dataset.state_keys:
-                    if key in obs:
-                        obs_data = obs[key]
-                        flat_data = obs_data.view(
-                            obs_data.shape[0], -1
-                        )  # (B, features)
-                        state_parts.append(flat_data)
-
-                if state_parts:
-                    current_state = torch.cat(
-                        state_parts, dim=-1
-                    )  # (B, total_state_dim)
-
-                    # Roll buffer: move everything left by 1, add new obs at the end
-                    state_buffer = torch.roll(state_buffer, shifts=-1, dims=1)
-                    state_buffer[:, -1, :] = current_state.to(self.device)
-
-            # Update image buffer
-            if image_buffer is not None and self.args.modality_type in (
-                "image",
-                "state+image",
-            ):
-                # Extract current image observation (use first available key)
-                for key in self.dataset.image_keys:
-                    if key in obs:
-                        img_data = obs[key]
-                        if img_data.dim() == 4:  # (B, C, H, W)
-                            # Normalize to [0, 1] if needed
-                            if img_data.max() > 1.0:
-                                img_data = img_data.float() / 255.0
-
-                            # Roll buffer: move everything left by 1, add new obs at the end
-                            image_buffer = torch.roll(image_buffer, shifts=-1, dims=1)
-                            image_buffer[:, -1, :, :, :] = img_data.permute(
-                                0, 3, 1, 2
-                            ).to(self.device)
-                            break
-
-        except Exception as e:
-            print(f"⚠️  Error updating buffers: {e}")
-            # Continue with existing buffers (graceful degradation)
-
-        return state_buffer, image_buffer
+        print(
+            f"{status_emoji} Epoch {epoch:3d}{validation_info} | "
+            + " | ".join(metrics_str)
+            + (f" | 📈 {lr_info}" if lr_info else "")
+            + f" | ⏱️  {epoch_metrics['epoch_time']:.1f}s"
+        )
 
     def fit(self):
         """Main training loop with comprehensive logging."""
@@ -1195,90 +1105,46 @@ class FlowBCTrainer:
         print(f"💾 Checkpoint dir: {self.ckpt_dir}")
         print(f"📊 WandB: {'Online' if self.args.log else 'Offline'}")
         print(f"🔬 Validation: {'Enabled' if self.args.validation else 'Disabled'}")
-        if self.args.validation:
-            print(f"🎮 Environment play: Every {self.args.eval_freq * 2} epochs")
-        else:
-            print(f"🎮 Environment play: Every {self.args.eval_freq} epochs")
+
+        play_freq = (
+            self.args.eval_freq * 2 if self.args.validation else self.args.eval_freq
+        )
+        print(f"🎮 Environment play: Every {play_freq} epochs")
 
         for epoch in range(self.start_epoch + 1, self.args.num_epochs + 1):
             epoch_start = time.time()
 
-            # Get current learning rate before training
-            current_lr = self.optimizer.param_groups[0]["lr"]
-
             # Training
             train_metrics = self.train_epoch(epoch)
 
-            # Validation (only if enabled)
+            # Validation, checkpoints, and best model tracking
             val_metrics = {}
-            is_best = False
+            is_best = self._handle_checkpoints_and_validation(epoch, val_metrics)
 
-            if self.args.validation and epoch % self.args.eval_freq == 0:
-                val_metrics = self.val_epoch(epoch)
+            # Environment play
+            self._handle_environment_play(epoch)
 
-                # Check for best model (only when validation is enabled)
-                val_loss = val_metrics["val_epoch/pred_mse"]
-                is_best = val_loss < self.best_val_loss
-                if is_best:
-                    self.best_val_loss = val_loss
-
-            # Save checkpoints every epoch (based on save_freq)
-            if epoch % self.args.save_freq == 0:
-                ckpt_path = os.path.join(self.ckpt_dir, f"epoch_{epoch}.pt")
-                self._save_checkpoint(ckpt_path, epoch, is_best=False)
-
-            # Play in environment (separate from validation)
-            if self.args.validation:
-                # When validation is enabled, play less frequently after validation
-                if epoch % (self.args.eval_freq * 2) == 0:
-                    self.play_in_environment(epoch)
-            else:
-                # When validation is disabled, play after every eval_freq epochs
-                if epoch % self.args.eval_freq == 0:
-                    self.play_in_environment(epoch)
-
-            # Step the learning rate scheduler
+            # Learning rate scheduling
             old_lr = self.optimizer.param_groups[0]["lr"]
             self.scheduler.step()
             new_lr = self.optimizer.param_groups[0]["lr"]
 
-            # Log learning rate change if it happened
             if old_lr != new_lr:
                 print(f"📉 Learning rate decayed: {old_lr:.2e} → {new_lr:.2e}")
 
-            # Epoch logging
-            epoch_metrics = {**train_metrics, **val_metrics}
-            epoch_metrics["epoch"] = epoch
-            epoch_metrics["best_val_loss"] = self.best_val_loss
-            epoch_metrics["epoch_time"] = time.time() - epoch_start
-            epoch_metrics["learning_rate"] = new_lr  # Log current learning rate
+            # Prepare and log epoch metrics
+            epoch_metrics = {
+                **train_metrics,
+                **val_metrics,
+                "epoch": epoch,
+                "best_val_loss": self.best_val_loss,
+                "epoch_time": time.time() - epoch_start,
+                "learning_rate": new_lr,
+            }
 
-            if self.run:
-                self.run.log(epoch_metrics, step=self.step_counter)
+            self._log_epoch_summary(epoch, epoch_metrics, is_best, old_lr, new_lr)
 
-            # Save best checkpoint only if validation is enabled and this is the best
-            if self.args.validation and is_best:
-                best_path = os.path.join(self.ckpt_dir, "best.pt")
-                self._save_checkpoint(best_path, epoch, is_best=True)
-
-            # Print epoch summary (Lightning style)
-            metrics_str = []
-            for k, v in epoch_metrics.items():
-                if isinstance(v, float) and "time" not in k and k != "learning_rate":
-                    metrics_str.append(f"{k}: {v:.4f}")
-
-            status_emoji = "🏆" if is_best else "✅"
-            lr_info = f"lr: {new_lr:.1e}" if new_lr != current_lr else ""
-            validation_info = " [NO VAL]" if not self.args.validation else ""
-
-            print(
-                f"{status_emoji} Epoch {epoch:3d}{validation_info} | "
-                + " | ".join(metrics_str)
-                + (f" | 📈 {lr_info}" if lr_info else "")
-                + f" | ⏱️  {epoch_metrics['epoch_time']:.1f}s"
-            )
-
-        # Log best checkpoint as artifact only if validation was enabled
+        # Cleanup
         if self.args.validation:
             self._log_best_checkpoint_artifact()
 
@@ -1292,7 +1158,8 @@ class FlowBCTrainer:
         if hasattr(self, "eval_envs") and self.eval_envs is not None:
             try:
                 self.eval_envs.close()
-            except:
+            except Exception as e:
+                print(f"❌ Error closing evaluation environment: {e}")
                 pass
 
 

@@ -4,13 +4,16 @@ This module provides a minimal wrapper around robomimic's proven SequenceDataset
 with just action normalization to [-1, 1] range. No reinventing the wheel!
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List
 
 import h5py
 import numpy as np
 import torch
 from robomimic.utils import obs_utils as RMObsUtils
 from robomimic.utils.dataset import SequenceDataset as RMSequenceDataset
+from tensordict import TensorDict
+
+from scripts.imitationrl.utils import process_image_batch
 
 __all__ = ["SequenceDataset", "ActionNormalizer"]
 
@@ -23,41 +26,18 @@ class ActionNormalizer:
     """
 
     def __init__(self, action_min: float, action_max: float):
-        """Initialize with action min/max values.
-
-        Args:
-            action_min: Minimum action value across all dimensions
-            action_max: Maximum action value across all dimensions
-        """
+        """Initialize with action min/max values."""
         self.action_min = float(action_min)
         self.action_max = float(action_max)
         self.action_range = self.action_max - self.action_min + 1e-8
 
     def normalize(self, actions):
-        """Normalize actions to [-1, 1] range.
-
-        Formula: 2 * ((data - min) / (max - min)) - 1
-
-        Args:
-            actions: Actions to normalize (numpy array or torch tensor)
-
-        Returns:
-            Normalized actions in [-1, 1] range
-        """
-        normalized = 2 * ((actions - self.action_min) / self.action_range) - 1
-        return normalized
+        """Normalize actions to [-1, 1] range."""
+        return 2 * ((actions - self.action_min) / self.action_range) - 1
 
     def denormalize(self, normalized_actions):
-        """Denormalize actions from [-1, 1] back to original range.
-
-        Args:
-            normalized_actions: Normalized actions in [-1, 1] range
-
-        Returns:
-            Actions in original range
-        """
-        actions = ((normalized_actions + 1) / 2) * self.action_range + self.action_min
-        return actions
+        """Denormalize actions from [-1, 1] back to original range."""
+        return ((normalized_actions + 1) / 2) * self.action_range + self.action_min
 
     def get_stats(self):
         """Get the action statistics as a dict."""
@@ -82,26 +62,17 @@ class SequenceDataset:
         normalize_actions: bool = True,
         modality_type: str = "state+image",  # "state", "image", "state+image"
         demo_limit: int | None = 10,
-        frame_stack: int = 1,  # Add frame_stack parameter
+        frame_stack: int = 1,
         **robomimic_kwargs,
     ):
-        """Initialize dataset wrapper around robomimic's SequenceDataset.
-
-        Args:
-            hdf5_path: Path to HDF5 dataset file
-            state_keys: List of state observation keys
-            image_keys: List of image observation keys
-            sequence_length: Length of sequences
-            pad_sequence: Whether to pad sequences
-            normalize_actions: Whether to normalize actions to [-1, 1]
-            modality_type: Type of modality ("state", "image", "state+image")
-            **robomimic_kwargs: Additional arguments passed to robomimic's SequenceDataset
-        """
+        """Initialize dataset wrapper around robomimic's SequenceDataset."""
         self.hdf5_path = hdf5_path
         self.modality_type = modality_type
         self.normalize_actions = normalize_actions
         self.demo_limit = demo_limit
-        # Default keys
+        self.frame_stack = robomimic_kwargs.get("frame_stack", frame_stack)
+
+        # Default keys - order matters for state concatenation
         self.state_keys = state_keys or [
             "left_eef_pos",
             "left_eef_quat",
@@ -111,13 +82,14 @@ class SequenceDataset:
         ]
         self.image_keys = image_keys or ["robot_pov_cam"]
 
-        # Initialize robomimic's observation utilities
+        # Setup observation keys based on modality
         obs_keys = []
         if modality_type in ("state", "state+image"):
             obs_keys.extend(self.state_keys)
         if modality_type in ("image", "state+image"):
             obs_keys.extend(self.image_keys)
 
+        # Initialize robomimic's observation utilities
         RMObsUtils.initialize_obs_utils_with_obs_specs(
             {
                 "obs": {
@@ -131,15 +103,12 @@ class SequenceDataset:
             }
         )
 
-        # Store frame_stack for reshaping later
-        self.frame_stack = robomimic_kwargs.get("frame_stack", frame_stack)
-
-        # Create robomimic dataset with defaults + user overrides
+        # Create robomimic dataset with sensible defaults
         rm_kwargs = {
             "hdf5_path": hdf5_path,
             "obs_keys": tuple(obs_keys),
             "dataset_keys": ("actions",),
-            "frame_stack": self.frame_stack,  # Use the passed frame_stack
+            "frame_stack": self.frame_stack,
             "seq_length": 1,  # Force seq_length to 1 when using frame_stack as time
             "pad_frame_stack": True,
             "pad_seq_length": pad_sequence,
@@ -155,7 +124,7 @@ class SequenceDataset:
 
         self.dataset = RMSequenceDataset(**rm_kwargs)
 
-        # Action normalization
+        # Setup action normalization
         self.action_normalizer = None
         if normalize_actions:
             action_stats = self._compute_action_stats()
@@ -166,7 +135,7 @@ class SequenceDataset:
     def _compute_action_stats(self) -> Dict[str, float]:
         """Compute action min/max for normalization to [-1, 1]."""
         try:
-            # Try to read from file attributes first
+            # Try reading from file attributes first
             with h5py.File(self.hdf5_path, "r") as f:
                 amin = f.attrs.get("action_min", None)
                 amax = f.attrs.get("action_max", None)
@@ -199,16 +168,18 @@ class SequenceDataset:
             return normalized_actions
         return self.action_normalizer.denormalize(normalized_actions)
 
-    def process_batch(
-        self, batch: Dict, device: torch.device
-    ) -> Tuple[Optional[torch.Tensor], Optional[torch.Tensor], torch.Tensor]:
-        """Process a batch from robomimic dataset into (state_seq, image_seq, actions).
+    def process_batch(self, batch: Dict, device: torch.device) -> TensorDict:
+        """Process a batch from robomimic dataset into a clean TensorDict.
 
         Returns:
-            state_seq: (B, T, S) or None
-            image_seq: (B, T, C, H, W) or None
-            actions: (B, A) normalized to [-1, 1]
+            TensorDict with keys: 'state_seq', 'image_seq', 'actions'
+            - state_seq: (B, T, S) or None if not using state modality
+            - image_seq: (B, T, C, H, W) or None if not using image modality
+            - actions: (B, A) normalized to [-1, 1]
         """
+        batch_size = None
+        result_dict = {}
+
         # Process actions - take last timestep and normalize
         actions = batch["actions"]
         if actions.dim() == 3:  # (B, T, A) -> (B, A)
@@ -217,51 +188,51 @@ class SequenceDataset:
         if self.action_normalizer is not None:
             actions = self.action_normalizer.normalize(actions)
 
-        actions = actions.to(device, non_blocking=True)
+        result_dict["actions"] = actions.to(device, non_blocking=True)
+        batch_size = actions.shape[0]
 
         # Process observations based on modality
-        state_seq = None
-        image_seq = None
-
         if "obs" in batch:
-            # States: concatenate requested low-dim keys
+            # Process states: concatenate in exact order of state_keys
             if self.modality_type in ("state", "state+image"):
-                state_parts = []
-                for k in self.state_keys:
-                    if k in batch["obs"]:
-                        x = batch["obs"][k]
-                        x = x.view(x.shape[0], x.shape[1], -1)  # Flatten last dims
-                        state_parts.append(x)
-
-                if state_parts:
-                    state_seq = torch.cat(state_parts, dim=-1)
-
-                    state_seq = state_seq.to(device, non_blocking=True)
-
-            # Images: use first key (can be extended for multi-camera)
-            if self.modality_type in ("image", "state+image"):
-                if len(self.image_keys) > 0:
-                    key = self.image_keys[0]
+                state_tensors = []
+                for key in self.state_keys:  # Maintain exact order
                     if key in batch["obs"]:
-                        img = batch["obs"][key]
+                        state_data = batch["obs"][key]
+                        # Flatten last dimensions: (B, T, ...) -> (B, T, -1)
+                        state_data = state_data.view(
+                            state_data.shape[0], state_data.shape[1], -1
+                        )
+                        state_tensors.append(state_data)
 
-                        # Convert to BTCHW if needed
-                        if img.dim() == 5 and img.shape[-1] in (
-                            1,
-                            3,
-                            4,
-                        ):  # B,T,H,W,C → B,T,C,H,W
-                            img = img.permute(0, 1, 4, 2, 3)
+                if state_tensors:
+                    state_seq = torch.cat(state_tensors, dim=-1)
+                    result_dict["state_seq"] = state_seq.to(device, non_blocking=True)
+                else:
+                    result_dict["state_seq"] = None
+            else:
+                result_dict["state_seq"] = None
 
-                        img = img.float()
+            # Process images: use first image key
+            if self.modality_type in ("image", "state+image"):
+                image_seq = None
+                if self.image_keys and self.image_keys[0] in batch["obs"]:
+                    img = batch["obs"][self.image_keys[0]]
 
-                        # Normalize to [0,1] if needed
-                        if img.max() > 1.0:
-                            img = (img / 255.0).clamp(0.0, 1.0)
+                    # Use shared image processing function
+                    image_seq = process_image_batch(
+                        img, target_format="BTCHW", normalize_to_01=True, device=device
+                    )
 
-                        image_seq = img.to(device, non_blocking=True)
+                result_dict["image_seq"] = image_seq
+            else:
+                result_dict["image_seq"] = None
+        else:
+            result_dict["state_seq"] = None
+            result_dict["image_seq"] = None
 
-        return state_seq, image_seq, actions
+        # Create TensorDict with proper batch size
+        return TensorDict(result_dict, batch_size=[batch_size])
 
     def __len__(self) -> int:
         if self.demo_limit is not None:
@@ -293,10 +264,9 @@ class SequenceDataset:
 
 def test_simple_dataset():
     """Simple test for the dataset wrapper."""
-    print(
-        "✅ Robomimic wrapper ready! Use robomimic's proven SequenceDataset with action normalization."
-    )
+    print("✅ Robomimic wrapper ready! Using TensorDict for clean batch processing.")
     print("Example usage:")
+
     dataset = SequenceDataset(
         hdf5_path="/home/chandramouli/cognitiverl/datasets/generated_dataset_gr1_nut_pouring.hdf5",
         state_keys=[
@@ -317,27 +287,31 @@ def test_simple_dataset():
     # Use in training loop
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dataloader = dataset.get_dataloader(batch_size=32)
+
     for batch in dataloader:
-        state_seq, image_seq, actions = dataset.process_batch(batch, device)
-        print(
-            state_seq.shape,
-            state_seq.dtype,
-            state_seq.device,
-            state_seq.max(),
-            state_seq.min(),
-        )
-        print(
-            image_seq.shape,
-            image_seq.dtype,
-            image_seq.device,
-            image_seq.max(),
-            image_seq.min(),
-        )
-        print(
-            actions.shape, actions.dtype, actions.device, actions.max(), actions.min()
-        )
+        tensor_dict = dataset.process_batch(batch, device)
+
+        print("TensorDict keys:", list(tensor_dict.keys()))
+        print("Batch size:", tensor_dict.batch_size)
+
+        if tensor_dict["state_seq"] is not None:
+            state_seq = tensor_dict["state_seq"]
+            print(f"State: {state_seq.shape}, {state_seq.dtype}, {state_seq.device}")
+            print(f"State range: [{state_seq.min():.3f}, {state_seq.max():.3f}]")
+
+        if tensor_dict["image_seq"] is not None:
+            image_seq = tensor_dict["image_seq"]
+            print(f"Image: {image_seq.shape}, {image_seq.dtype}, {image_seq.device}")
+            print(f"Image range: [{image_seq.min():.3f}, {image_seq.max():.3f}]")
+
+        actions = tensor_dict["actions"]
+        print(f"Actions: {actions.shape}, {actions.dtype}, {actions.device}")
+        print(f"Actions range: [{actions.min():.3f}, {actions.max():.3f}]")
         break
-    # actions are now in [-1, 1] range
+
+    print("✅ Actions are normalized to [-1, 1] range")
+    print("✅ State concatenation preserves exact key order")
+    print("✅ TensorDict provides clean batch structure")
 
 
 if __name__ == "__main__":
