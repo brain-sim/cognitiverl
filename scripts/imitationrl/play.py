@@ -1,6 +1,6 @@
-"""Play SeqFlow-BC policy in the Isaac Lab simulation.
+"""Play VanillaFlow-BC policy in the Isaac Lab simulation.
 
-Loads a SeqFlowPolicy checkpoint (from scripts/imitation_learning/train.py),
+Loads a VanillaFlowPolicy checkpoint (from scripts/imitationrl/train.py),
 recreates the policy, and runs it in an Isaac Lab environment. It builds a
 rolling observation sequence (state + image) and feeds it to the policy at
 each step.
@@ -8,7 +8,7 @@ each step.
 Notes
 - Assumes the env's policy observation is [flattened image | flattened state].
   If not available, it falls back to zeros for the missing part.
-- Action de-normalization uses `action_stats` saved in the checkpoint when
+- Action de-normalization uses `action_normalizer` saved in the checkpoint when
   `normalize_actions=True` during training; otherwise actions are forwarded.
 - Initializes an OFFLINE W&B run and routes RecordVideo outputs under the run's files dir.
 """
@@ -20,9 +20,12 @@ from dataclasses import asdict, dataclass
 from types import SimpleNamespace
 from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
+import torchvision
+from PIL import Image
 
-from scripts.imitationrl.model import SeqFlowPolicy
+from scripts.imitationrl.models import VanillaFlowPolicy  # Changed from SeqFlowPolicy
 from scripts.utils import load_args, make_isaaclab_env, seed_everything
 
 try:
@@ -49,6 +52,216 @@ class EnvArgs:
     enable_cameras: bool = False
 
 
+def save_image_buffer(
+    image_buffer: torch.Tensor,
+    save_dir: str,
+    step: int,
+    env_indices: Optional[List[int]] = None,
+    max_envs_to_save: int = 4,
+):
+    """Save image buffer as a single grid: envs as rows, sequence timesteps as columns.
+
+    Args:
+        image_buffer: (num_envs, T, C, H, W) tensor
+        save_dir: Directory to save images
+        step: Current step number
+        env_indices: Which environments to save (if None, save first max_envs_to_save)
+        max_envs_to_save: Maximum number of environments to save
+    """
+    if image_buffer is None:
+        return
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    num_envs, T, C, H, W = image_buffer.shape
+
+    # Select which environments to save
+    if env_indices is None:
+        num_envs_to_save = min(max_envs_to_save, num_envs)
+        env_indices = list(range(num_envs_to_save))
+    else:
+        num_envs_to_save = len(env_indices)
+
+    # Get selected environments: (num_envs_to_save, T, C, H, W)
+    selected_envs = image_buffer[env_indices]
+
+    # Ensure values are in [0, 1] range
+    if selected_envs.max() > 1.0:
+        selected_envs = selected_envs / 255.0
+    selected_envs = torch.clamp(selected_envs, 0.0, 1.0)
+
+    # Reshape for grid: (num_envs_to_save * T, C, H, W)
+    # We want envs as rows, timesteps as columns
+    grid_images = selected_envs.view(num_envs_to_save * T, C, H, W)
+
+    # Create grid: T columns (timesteps), num_envs_to_save rows (environments)
+    grid = torchvision.utils.make_grid(
+        grid_images,
+        nrow=T,  # T timesteps per row (each row is one environment)
+        normalize=False,  # Already normalized
+        padding=2,
+        pad_value=1.0,  # White padding
+    )
+
+    # Convert to PIL image
+    grid_np = grid.permute(1, 2, 0).cpu().numpy()  # (H, W, C)
+    grid_np = (grid_np * 255).astype(np.uint8)
+
+    # Save single grid image
+    filename = f"step_{step:04d}_grid_{num_envs_to_save}envs_{T}timesteps.png"
+    filepath = os.path.join(save_dir, filename)
+
+    Image.fromarray(grid_np).save(filepath)
+
+    # Also save a version with labels
+    save_labeled_grid(
+        grid_np,
+        filepath.replace(".png", "_labeled.png"),
+        num_envs_to_save,
+        T,
+        env_indices,
+    )
+
+
+def save_labeled_grid(
+    grid_np: np.ndarray,
+    filepath: str,
+    num_envs: int,
+    num_timesteps: int,
+    env_indices: List[int],
+):
+    """Save grid with environment and timestep labels."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        img = Image.fromarray(grid_np)
+        draw = ImageDraw.Draw(img)
+
+        # Try to load a font, fallback to default if not available
+        try:
+            font = ImageFont.truetype("DejaVuSans.ttf", 16)
+        except:
+            try:
+                font = ImageFont.truetype(
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16
+                )
+            except:
+                font = ImageFont.load_default()
+
+        # Calculate image dimensions in the grid
+        img_height = grid_np.shape[0] // num_envs
+        img_width = grid_np.shape[1] // num_timesteps
+
+        # Add environment labels (left side)
+        for env_idx in range(num_envs):
+            y_pos = env_idx * img_height + img_height // 2
+            label = f"Env {env_indices[env_idx]}"
+            draw.text((5, y_pos), label, fill=(255, 0, 0), font=font)
+
+        # Add timestep labels (top)
+        for t_idx in range(num_timesteps):
+            x_pos = t_idx * img_width + img_width // 2 - 20
+            label = f"t-{num_timesteps - 1 - t_idx}"  # Most recent is t-0
+            draw.text((x_pos, 5), label, fill=(0, 255, 0), font=font)
+
+        img.save(filepath)
+
+    except Exception:
+        # If labeling fails, just save the original
+        Image.fromarray(grid_np).save(filepath)
+
+
+def save_current_observation(
+    obs_dict: Dict,
+    adapter: "ObsAdapter",
+    save_dir: str,
+    step: int,
+    max_envs_to_save: int = 4,
+):
+    """Save current observation as a grid: one row of current observations from multiple envs."""
+    if adapter.image_key is None:
+        return
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Get current observation image
+    if adapter.image_key in obs_dict:
+        img_obs = obs_dict[adapter.image_key]  # (num_envs, H, W, C)
+
+        if isinstance(img_obs, torch.Tensor):
+            # Convert to (num_envs, C, H, W) and normalize
+            if img_obs.dim() == 4 and img_obs.shape[-1] in (1, 3, 4):
+                img_obs = img_obs.permute(0, 3, 1, 2)  # NHWC -> NCHW
+
+            if img_obs.max() > 1.0:
+                img_obs = img_obs.float() / 255.0
+
+            img_obs = torch.clamp(img_obs, 0.0, 1.0)
+
+            # Select environments to save
+            num_envs_to_save = min(max_envs_to_save, img_obs.shape[0])
+            selected_imgs = img_obs[:num_envs_to_save]
+
+            # Create horizontal grid: all environments in one row
+            grid = torchvision.utils.make_grid(
+                selected_imgs,
+                nrow=num_envs_to_save,  # All environments in one row
+                normalize=False,
+                padding=2,
+                pad_value=1.0,
+            )
+
+            # Convert to PIL image
+            grid_np = grid.permute(1, 2, 0).cpu().numpy()  # (H, W, C)
+            grid_np = (grid_np * 255).astype(np.uint8)
+
+            # Save grid image
+            filename = f"step_{step:04d}_current_{num_envs_to_save}envs.png"
+            filepath = os.path.join(save_dir, filename)
+
+            Image.fromarray(grid_np).save(filepath)
+
+            # Also save labeled version
+            save_current_labeled_grid(
+                grid_np, filepath.replace(".png", "_labeled.png"), num_envs_to_save
+            )
+
+
+def save_current_labeled_grid(grid_np: np.ndarray, filepath: str, num_envs: int):
+    """Save current observation grid with environment labels."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        img = Image.fromarray(grid_np)
+        draw = ImageDraw.Draw(img)
+
+        # Try to load a font
+        try:
+            font = ImageFont.truetype("DejaVuSans.ttf", 16)
+        except:
+            try:
+                font = ImageFont.truetype(
+                    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 16
+                )
+            except:
+                font = ImageFont.load_default()
+
+        # Calculate image width in the grid
+        img_width = grid_np.shape[1] // num_envs
+
+        # Add environment labels
+        for env_idx in range(num_envs):
+            x_pos = env_idx * img_width + img_width // 2 - 20
+            label = f"Env {env_idx}"
+            draw.text((x_pos, 5), label, fill=(255, 0, 0), font=font)
+
+        img.save(filepath)
+
+    except Exception:
+        # If labeling fails, just save the original
+        Image.fromarray(grid_np).save(filepath)
+
+
 @dataclass
 class PlayArgs(EnvArgs):
     # Checkpoint + AMP
@@ -58,9 +271,16 @@ class PlayArgs(EnvArgs):
     val_flow_steps: int = 32
     # Logging (offline wandb)
     wandb_project: str = "imitation-play"
-    run_name: str = "seq_flow_play"
+    run_name: str = "vanilla_flow_play"  # Updated name
     wandb_dir: str = WANDB_DIR_DEFAULT
     log_interval: int = 10
+
+    # Image saving options - ADD THESE
+    save_observation_images: bool = True
+    save_image_interval: int = 1  # Save every N steps
+    max_envs_to_save: int = 4  # How many environments to save images for
+    save_sequence_buffer: bool = True  # Save the full sequence buffer
+    save_current_obs: bool = True  # Save current observation
 
 
 class ObsAdapter:
@@ -129,27 +349,64 @@ class ObsAdapter:
         return state.float(), image.float() if image is not None else None
 
 
-def _infer_dims_from_state_dict(sd: dict) -> Tuple[int, int]:
-    """Infer (state_dim, action_dim) from the model state dict."""
-    # action_dim from last flow Linear weight
-    # Try common key name patterns
-    action_dim = None
-    for k in ("flow.4.weight", "flow.2.weight", "flow.6.weight"):
-        if k in sd:
-            action_dim = sd[k].shape[0]
-            break
-    if action_dim is None:
-        raise RuntimeError(
-            "Could not infer action_dim from state dict (flow.*.weight not found)"
-        )
+def _infer_dims_from_state_dict(sd: dict) -> Tuple[int, int, dict]:
+    """Infer (state_dim, action_dim, model_params) from the VanillaFlowPolicy state dict."""
 
-    # state_dim from first StateMLP layer
+    # action_dim from final flow layer
+    action_dim = None
+    ff_hidden = None
+    for k in sd.keys():
+        if "flow.6.weight" in k:  # Final layer
+            action_dim = sd[k].shape[0]
+            print(f"Found action_dim={action_dim} from {k}")
+        elif "flow.0.weight" in k:  # First layer
+            ff_hidden = sd[k].shape[0]
+            flow_input_dim = sd[k].shape[1]
+            print(
+                f"Found ff_hidden={ff_hidden}, flow_input_dim={flow_input_dim} from {k}"
+            )
+
+    if action_dim is None or ff_hidden is None:
+        raise RuntimeError("Could not infer action_dim and ff_hidden from state dict")
+
+    # d_model from flow input: flow_input = d_model + action_dim + 1
+    d_model = flow_input_dim - action_dim - 1
+    print(f"Inferred d_model={d_model}")
+
+    # state_dim from state encoder if available
     state_dim = 0
-    for k in ("state_encoder.net.0.weight", "state_encoder.0.weight"):
+    for k in ("state_encoder.net.0.weight",):
         if k in sd:
             state_dim = sd[k].shape[1]
+            print(f"Found state_dim={state_dim} from {k}")
             break
-    return int(state_dim), int(action_dim)
+
+    if state_dim == 0:
+        state_dim = 36  # Fallback
+        print(f"Using fallback state_dim={state_dim}")
+
+    # Try to infer frame_stack from sequence_processor
+    frame_stack = 10  # default
+    sequence_length = 1  # default
+
+    for k in sd.keys():
+        if "sequence_processor.net.0.weight" in k:
+            effective_seq_length = frame_stack * sequence_length
+            seq_input_dim = effective_seq_length * d_model
+            print(
+                f"Inferred frame_stack={frame_stack} from sequence processor input dim {seq_input_dim}"
+            )
+            break
+
+    model_params = {
+        "d_model": d_model,
+        "ff_hidden": ff_hidden,
+        "frame_stack": frame_stack,
+        "action_dim": action_dim,
+        "state_dim": state_dim,
+    }
+
+    return int(state_dim), int(action_dim), model_params
 
 
 class SequenceBuffer:
@@ -199,41 +456,6 @@ class SequenceBuffer:
         return self._image
 
 
-def _split_env_obs(
-    obs: torch.Tensor, state_dim: int, img_size: Tuple[int, int, int]
-) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-    """Split env policy observation into (state, image).
-
-    Heuristic: assumes obs is [flattened image | flattened state | ...]. If not
-    enough dims, falls back to zeros for the missing part.
-    """
-    N = obs.size(0)
-    C, H, W = img_size
-    img_flat = C * H * W
-    D = obs.size(1)
-    state_out = torch.zeros(N, state_dim, device=obs.device, dtype=torch.float32)
-    img_out: Optional[torch.Tensor] = None
-
-    # Image slice if available
-    if D >= img_flat:
-        img = obs[:, :img_flat].view(N, C, H, W)
-        # Normalize pixel range if needed (env may already be [0,1])
-        img_out = img.to(torch.float32)
-        off = img_flat
-    else:
-        off = 0
-
-    # State slice if available
-    if D - off >= state_dim and state_dim > 0:
-        state_out = obs[:, off : off + state_dim].to(torch.float32)
-    elif state_dim > 0 and D > off:
-        # Partial fill if obs smaller than expected
-        take = min(state_dim, D - off)
-        state_out[:, :take] = obs[:, off : off + take].to(torch.float32)
-
-    return state_out, img_out
-
-
 def main():
     args = load_args(PlayArgs)
     seed_everything(args.seed, use_torch=True, torch_deterministic=True)
@@ -242,11 +464,18 @@ def main():
     ckpt = torch.load(args.checkpoint, map_location="cpu")
     ckpt_args = ckpt.get("args", {})
     model_sd = ckpt["model_state_dict"]
-    action_stats = ckpt.get("action_stats", None)
 
-    state_dim_tr, action_dim = _infer_dims_from_state_dict(model_sd)
+    # Updated to match train.py action normalizer format
+    action_normalizer = None
+    if "action_normalizer" in ckpt and ckpt["action_normalizer"]:
+        from scripts.imitationrl.dataset import ActionNormalizer
 
-    # Build model args namespace from checkpoint (must provide architecture fields)
+        action_normalizer = ActionNormalizer.from_stats(ckpt["action_normalizer"])
+
+    # Updated dimension inference
+    state_dim_tr, action_dim, inferred_params = _infer_dims_from_state_dict(model_sd)
+
+    # Build model args namespace from checkpoint - Updated for VanillaFlowPolicy
     required_model_keys = [
         "d_model",
         "nhead",
@@ -256,11 +485,36 @@ def main():
         "sequence_length",
         "img_size",
         "modality_type",
+        "frame_stack",
     ]
-    missing = [k for k in required_model_keys if k not in ckpt_args]
-    if missing:
-        raise RuntimeError(f"Checkpoint args missing required keys: {missing}")
-    model_args = SimpleNamespace(**{k: ckpt_args[k] for k in required_model_keys})
+
+    # Use inferred parameters first, then checkpoint args, then defaults
+    model_args_dict = {}
+    for k in required_model_keys:
+        if k in inferred_params:
+            model_args_dict[k] = inferred_params[k]
+            print(f"Using inferred {k}={inferred_params[k]}")
+        elif k in ckpt_args:
+            model_args_dict[k] = ckpt_args[k]
+            print(f"Using checkpoint {k}={ckpt_args[k]}")
+        else:
+            # Provide defaults matching train.py
+            defaults = {
+                "d_model": 256,
+                "nhead": 8,
+                "num_layers": 4,
+                "ff_hidden": 512,
+                "dropout": 0.1,
+                "sequence_length": 1,
+                "img_size": (3, 160, 256),
+                "modality_type": "state+image",
+                "frame_stack": 10,
+            }
+            if k in defaults:
+                model_args_dict[k] = defaults[k]
+                print(f"Using default {k}={defaults[k]}")
+
+    model_args = SimpleNamespace(**model_args_dict)
 
     # Device + AMP
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
@@ -300,14 +554,14 @@ def main():
     from argparse import Namespace
 
     import pinocchio  # noqa: F401
-    from isaaclab.app import AppLauncher  # local import to avoid hard dep on import
+    from isaaclab.app import AppLauncher
 
     app = AppLauncher(Namespace(**asdict(args))).app
 
     import isaaclab_tasks  # noqa: F401
     import isaaclab_tasks.manager_based.manipulation.pick_place  # noqa: F401
 
-    # Create environment (no custom wrapper to preserve dict obs)
+    # Create environment
     env_fn = make_isaaclab_env(
         task=args.task,
         device=args.device,
@@ -320,13 +574,30 @@ def main():
         video_interval=args.video_interval,
     )
     env = env_fn()
-    # Build policy
-    policy = SeqFlowPolicy(state_dim_tr, action_dim, model_args).to(device)
+
+    # Build policy - Print model creation details
+    print("\n🔧 Creating VanillaFlowPolicy:")
+    print(f"  state_dim: {state_dim_tr}")
+    print(f"  action_dim: {action_dim}")
+    print(f"  d_model: {model_args.d_model}")
+    print(f"  ff_hidden: {model_args.ff_hidden}")
+    print(f"  frame_stack: {model_args.frame_stack}")
+    print(f"  sequence_length: {model_args.sequence_length}")
+
+    policy = VanillaFlowPolicy(state_dim_tr, action_dim, model_args).to(device)
+
+    # Debug: Print some layer shapes before loading
+    print("\n🔍 Model layer shapes:")
+    for name, param in policy.named_parameters():
+        if "flow" in name and "weight" in name:
+            print(f"  {name}: {param.shape}")
+
     policy.load_state_dict(model_sd)
     policy.eval()
+    print("✅ Model loaded successfully")
 
     # Buffers
-    T = int(model_args.sequence_length)
+    T = int(model_args.sequence_length * model_args.frame_stack)
     C, H, W = tuple(model_args.img_size)
     buf = SequenceBuffer(
         T=T, num_envs=args.num_envs, state_dim=state_dim_tr, img_size=(C, H, W)
@@ -337,18 +608,40 @@ def main():
         "state_keys",
         [
             "left_eef_pos",
-            "hand_joint_state",
+            "left_eef_quat",
             "right_eef_pos",
             "right_eef_quat",
-            "left_eef_quat",
+            "hand_joint_state",
         ],
     )
+
+    # Ensure state_keys is not None
+    if state_keys is None:
+        state_keys = [
+            "left_eef_pos",
+            "left_eef_quat",
+            "right_eef_pos",
+            "right_eef_quat",
+            "hand_joint_state",
+        ]
+
     image_keys = ckpt_args.get("image_keys", ("robot_pov_cam",))
-    image_key = (
-        image_keys[0]
-        if isinstance(image_keys, (list, tuple)) and len(image_keys) > 0
-        else None
-    )
+
+    # Ensure image_keys is not None and handle different formats
+    if image_keys is None:
+        image_keys = ["robot_pov_cam"]
+
+    # Handle different image_keys formats (list, tuple, string)
+    if isinstance(image_keys, str):
+        image_key = image_keys
+    elif isinstance(image_keys, (list, tuple)) and len(image_keys) > 0:
+        image_key = image_keys[0]
+    else:
+        image_key = "robot_pov_cam"  # fallback
+
+    print(f"🔑 Using state_keys: {state_keys}")
+    print(f"🖼️  Using image_key: {image_key}")
+
     adapter = ObsAdapter(list(state_keys), image_key, (C, H, W))
 
     # Reset env and prefill buffer with initial obs
@@ -360,12 +653,10 @@ def main():
     for _ in range(T):
         buf.append(s0, i0)
 
-    # Action de-normalization helper
+    # Action de-normalization helper - Updated to use ActionNormalizer
     def denormalize_actions(x: torch.Tensor) -> torch.Tensor:
-        if ckpt_args.get("normalize_actions", False) and action_stats is not None:
-            a_min = float(action_stats.get("min", 0.0))
-            a_max = float(action_stats.get("max", 1.0))
-            return x.clamp(0.0, 1.0) * (a_max - a_min) + a_min
+        if action_normalizer is not None:
+            return action_normalizer.denormalize(x)
         return x
 
     # Episode/metric trackers
@@ -374,6 +665,22 @@ def main():
     completed_returns: List[float] = []
     completed_lengths: List[int] = []
     total_episodes = 0
+
+    # Create directories for saving images
+    image_save_dirs = {}
+    if args.save_observation_images:
+        base_image_dir = os.path.join(files_dir or ".", "videos", "observations")
+        image_save_dirs["sequence_buffer"] = os.path.join(
+            base_image_dir, "sequence_buffer"
+        )
+        image_save_dirs["current_obs"] = os.path.join(base_image_dir, "current_obs")
+
+        for dir_path in image_save_dirs.values():
+            os.makedirs(dir_path, exist_ok=True)
+
+        print(f"🖼️  Saving observation images to: {base_image_dir}")
+        print(f"   📁 Sequence buffer: {image_save_dirs['sequence_buffer']}")
+        print(f"   📁 Current obs: {image_save_dirs['current_obs']}")
 
     # Step loop
     for step in range(1, args.num_steps + 1):
@@ -385,8 +692,25 @@ def main():
         ):
             state_seq = buf.state
             image_seq = buf.image
+
+            # Save sequence buffer images if enabled
+            if (
+                args.save_observation_images
+                and args.save_sequence_buffer
+                and step % args.save_image_interval == 0
+            ):
+                save_image_buffer(
+                    image_seq,
+                    image_save_dirs["sequence_buffer"],
+                    step,
+                    max_envs_to_save=args.max_envs_to_save,
+                )
+
             pred = policy.sample_actions(
-                state_seq, image_seq, steps=int(args.val_flow_steps)
+                state_seq,
+                image_seq,
+                steps=int(args.val_flow_steps),
+                deterministic=True,
             )
             act = denormalize_actions(pred)
 
@@ -402,6 +726,20 @@ def main():
 
         # Step env (Wrapper API): returns obs_dict, reward, done, extras
         obs_dict, rew, done, info = env.step(act)
+
+        # Save current observation images if enabled
+        if (
+            args.save_observation_images
+            and args.save_current_obs
+            and step % args.save_image_interval == 0
+        ):
+            save_current_observation(
+                obs_dict,
+                adapter,
+                image_save_dirs["current_obs"],
+                step,
+                max_envs_to_save=args.max_envs_to_save,
+            )
 
         # Accumulate episode returns/lengths
         rew_cpu = (
@@ -477,8 +815,29 @@ def main():
 
         if step % 50 == 0 or step == args.num_steps:
             print(f"Step {step}/{args.num_steps}")
+            if completed_returns:
+                print(
+                    f"  Avg reward: {sum(completed_returns) / len(completed_returns):.2f}"
+                )
 
-    wandb.finish()
+            # Print image saving status
+            if args.save_observation_images:
+                total_images = (
+                    step // args.save_image_interval
+                ) * args.max_envs_to_save
+                print(f"  📸 Saved ~{total_images} observation images")
+
+    # Final summary
+    if completed_returns:
+        avg_reward = sum(completed_returns) / len(completed_returns)
+        print("\n🎯 Final Results:")
+        print(f"  Episodes completed: {len(completed_returns)}")
+        print(f"  Average reward: {avg_reward:.2f}")
+        print(f"  Max reward: {max(completed_returns):.2f}")
+        print(f"  Min reward: {min(completed_returns):.2f}")
+
+    if run:
+        wandb.finish()
     env.close()
     app.close()
 

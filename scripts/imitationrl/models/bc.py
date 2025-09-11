@@ -37,8 +37,8 @@ class ImageEncoder(nn.Module):
         # Replace classifier with our projection layer
         self.backbone.classifier = nn.Sequential(
             nn.Linear(mobilenet_features, 512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.2),
+            nn.LayerNorm(512),
+            nn.ELU(inplace=True),
             nn.Linear(512, out_dim),
         )
 
@@ -56,11 +56,11 @@ class StateMLP(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_dim, 256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.1),
+            nn.LayerNorm(256),
+            nn.ELU(inplace=True),
             nn.Linear(256, 512),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.1),
+            nn.LayerNorm(512),
+            nn.ELU(inplace=True),
             nn.Linear(512, out_dim),
         )
 
@@ -80,11 +80,11 @@ class SequenceMLP(nn.Module):
         flattened_dim = seq_len * feature_dim
         self.net = nn.Sequential(
             nn.Linear(flattened_dim, out_dim * 2),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.1),
+            nn.LayerNorm(out_dim * 2),
+            nn.ELU(inplace=True),
             nn.Linear(out_dim * 2, out_dim * 2),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.1),
+            nn.LayerNorm(out_dim * 2),
+            nn.ELU(inplace=True),
             nn.Linear(out_dim * 2, out_dim),
         )
 
@@ -116,8 +116,8 @@ class BCPolicy(nn.Module):
         self.dropout = nn.Dropout(args.dropout)
 
         # Encoders
-        d_img = args.d_model // 2
-        d_state = args.d_model // 2
+        d_img = 512
+        d_state = 128
 
         self.state_encoder = StateMLP(state_dim, d_state) if state_dim > 0 else None
         self.image_encoder = ImageEncoder(d_img)
@@ -126,24 +126,26 @@ class BCPolicy(nn.Module):
         fusion_input_dim = d_img + (d_state if state_dim > 0 else 0)
         self.fuse = nn.Sequential(
             nn.Linear(fusion_input_dim, args.d_model),
-            nn.ReLU(inplace=True),
-            nn.Dropout(args.dropout),
+            nn.LayerNorm(args.d_model),
+            nn.ELU(inplace=True),
             nn.Linear(args.d_model, args.d_model),
         )
 
         # Sequence processor - processes entire sequence with MLP
         self.sequence_processor = SequenceMLP(
-            seq_len=args.sequence_length, feature_dim=args.d_model, out_dim=args.d_model
+            seq_len=args.sequence_length * args.frame_stack,
+            feature_dim=args.d_model,
+            out_dim=args.d_model,
         )
 
         # Action head - directly predicts actions
         self.action_head = nn.Sequential(
             nn.Linear(args.d_model, args.ff_hidden),
-            nn.ReLU(inplace=True),
-            nn.Dropout(args.dropout),
+            nn.LayerNorm(args.ff_hidden),
+            nn.ELU(inplace=True),
             nn.Linear(args.ff_hidden, args.ff_hidden),
-            nn.ReLU(inplace=True),
-            nn.Dropout(args.dropout),
+            nn.LayerNorm(args.ff_hidden),
+            nn.ELU(inplace=True),
             nn.Linear(args.ff_hidden, action_dim),
             nn.Tanh(),  # Output actions in [-1, 1] range
         )

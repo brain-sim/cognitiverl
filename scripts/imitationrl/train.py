@@ -5,6 +5,7 @@ Supports train, validation, and play phases with comprehensive metrics.
 """
 
 import os
+import shutil
 import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -21,7 +22,7 @@ from tqdm.auto import tqdm
 
 # Local imports
 from scripts.imitationrl.dataset import SequenceDataset
-from scripts.imitationrl.models import VanillaFlowPolicy
+from scripts.imitationrl.models import BCPolicy
 from scripts.utils import load_args, make_isaaclab_env, seed_everything
 
 try:
@@ -32,6 +33,8 @@ except ImportError:
 # WandB configuration
 WANDB_DIR_DEFAULT = "/home/chandramouli/cognitiverl"
 
+os.environ["WANDB_IGNORE_GLOBS"] = "*.pt,*.mp4"
+
 
 @dataclass
 class TrainArgs:
@@ -41,22 +44,27 @@ class TrainArgs:
     device: str = "cuda:0"
     seed: int = 1
     batch_size: int = 32
-    learning_rate: float = 1e-4
+    learning_rate: float = 5e-4
     num_epochs: int = 100
     eval_freq: int = 1
     save_freq: int = 1
 
+    # Add validation flag
+    validation: bool = False  # New flag to enable/disable validation
+
     # Learning rate scheduling - ADD THESE
     lr_decay: float = 0.5  # Changed default from 1.0 to 0.5 for actual decay
-    lr_steps: List[int] = None  # Will default to [10, 20, 50]
+    lr_steps: Tuple[int] = (10, 20, 50)  # Will default to [10, 20, 50]
 
     # Data
     dataset: str = (
         "/home/chandramouli/cognitiverl/datasets/generated_dataset_gr1_nut_pouring.hdf5"
     )
-    train_split: float = 0.8
-    sequence_length: int = 10
+    train_split: float = 1.0
+    sequence_length: int = 1
     pad_sequence: bool = True
+    frame_stack: int = 10
+    pad_frame_stack: bool = True
     normalize_actions: bool = True
     demo_limit: Optional[int] = None
     num_workers: int = 4
@@ -83,7 +91,7 @@ class TrainArgs:
     log: bool = False  # True=online, False=offline
     wandb_project: str = "bc"
     wandb_dir: str = WANDB_DIR_DEFAULT
-    run_name: str = "seq_flow_bc"
+    run_name: str = "bc"
     log_image_freq: int = 1  # Log images every N epochs
 
     resume: Optional[str] = None
@@ -240,7 +248,7 @@ class FlowBCTrainer:
         # Mixed precision setup (before model info)
         self.amp_enabled = (self.device.type == "cuda") and bool(args.amp)
         self.amp_dtype = torch.bfloat16 if args.amp_dtype == "bf16" else torch.float16
-        self.scaler = torch.cuda.amp.GradScaler(enabled=self.amp_enabled)
+        self.scaler = torch.amp.GradScaler(enabled=self.amp_enabled)
 
         # Initialize logging
         self.run = self._init_wandb()
@@ -269,6 +277,8 @@ class FlowBCTrainer:
         # Resume from checkpoint if specified
         if args.resume:
             self._load_checkpoint(args.resume)
+
+        self.step_counter = 0
 
     def _print_dataset_info(self):
         """Print comprehensive dataset information."""
@@ -434,10 +444,10 @@ class FlowBCTrainer:
         # Default keys
         state_keys = self.args.state_keys or [
             "left_eef_pos",
-            "hand_joint_state",
+            "left_eef_quat",
             "right_eef_pos",
             "right_eef_quat",
-            "left_eef_quat",
+            "hand_joint_state",
         ]
         image_keys = self.args.image_keys or ["robot_pov_cam"]
 
@@ -446,7 +456,9 @@ class FlowBCTrainer:
             state_keys=state_keys,
             image_keys=image_keys,
             sequence_length=self.args.sequence_length,
+            frame_stack=self.args.frame_stack,
             pad_sequence=self.args.pad_sequence,
+            pad_frame_stack=self.args.pad_frame_stack,
             normalize_actions=self.args.normalize_actions,
             modality_type=self.args.modality_type,
         )
@@ -538,7 +550,7 @@ class FlowBCTrainer:
 
         print("🔧 Creating model...")
         try:
-            model = VanillaFlowPolicy(state_dim, action_dim, self.args).to(self.device)
+            model = BCPolicy(state_dim, action_dim, self.args).to(self.device)
             print("✅ Model created successfully")
         except Exception as e:
             print(f"❌ Model creation failed: {e}")
@@ -611,16 +623,28 @@ class FlowBCTrainer:
         }
 
         torch.save(checkpoint, path)
+        # Removed automatic artifact logging - only log best checkpoint at end
 
-        if self.run:
-            # Log checkpoint as artifact
+    def _log_best_checkpoint_artifact(self):
+        """Log the best checkpoint as a WandB artifact at the end of training."""
+        if not self.run or not self.args.validation:
+            if not self.args.validation:
+                print("⚠️  Best checkpoint not saved because validation is disabled")
+            return
+
+        best_path = os.path.join(self.ckpt_dir, "best.pt")
+        if os.path.exists(best_path):
+            print("🏆 Logging best checkpoint as artifact...")
             artifact = wandb.Artifact(
-                name=f"checkpoint_epoch_{epoch}",
+                name="best_checkpoint",
                 type="model",
-                description=f"Model checkpoint at epoch {epoch}",
+                description=f"Best model checkpoint with validation loss: {self.best_val_loss:.4f}",
             )
-            artifact.add_file(path)
+            artifact.add_file(best_path)
             self.run.log_artifact(artifact)
+            print("✅ Best checkpoint logged as artifact")
+        else:
+            print("⚠️  Best checkpoint not found, skipping artifact logging")
 
     def _load_checkpoint(self, path: str):
         """Load checkpoint and restore training state."""
@@ -734,16 +758,20 @@ class FlowBCTrainer:
             "image",
             "state+image",
         ):
-            self._log_image_grid(epoch, "train_epoch")
+            self._log_image_grid(epoch, "train_epoch", self.step_counter)
 
         # Lightning-style progress bar with better info
+        # Get terminal width and set appropriate ncols
+        terminal_width = shutil.get_terminal_size().columns
+        progress_width = min(terminal_width - 10, 100)  # Leave some margin
+
         pbar = tqdm(
             self.train_loader,
             desc="  🔥 Training",
             leave=False,
-            ncols=140,
+            ncols=progress_width,  # Reduced from 140
             position=1,
-            bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}",
+            bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}",  # Removed rate_fmt
         )
 
         running_loss = 0.0
@@ -769,18 +797,17 @@ class FlowBCTrainer:
 
             # Step-wise logging
             if self.run:
-                self.run.log(
-                    step_metrics, step=(epoch + 1) * len(self.train_loader) + step
-                )
+                self.run.log(step_metrics, step=self.step_counter)
+            self.step_counter += 1
 
-            # Update progress bar with key metrics
+            # Update progress bar with key metrics (simplified)
             pbar.set_postfix(
                 {
-                    "loss": f"{running_loss:.4f}",
-                    "mse": f"{running_mse:.4f}",
+                    "loss": f"{running_loss:.3f}",  # Reduced precision
+                    "mse": f"{running_mse:.3f}",
                     "cos_sim": f"{running_cos_sim:.3f}",
-                    "lr": f"{self.optimizer.param_groups[0]['lr']:.1e}",
-                    "grad_norm": f"{self._get_grad_norm():.2f}",
+                    "lr": f"{self.optimizer.param_groups[0]['lr']:.0e}",  # Shorter format
+                    "gn": f"{self._get_grad_norm():.2f}",
                 }
             )
 
@@ -816,16 +843,29 @@ class FlowBCTrainer:
             "image",
             "state+image",
         ):
-            self._log_image_grid(epoch, "val")
+            self._log_image_grid(epoch, "val_epoch", self.step_counter)
 
         # Lightning-style progress bar
         pbar = tqdm(
             self.val_loader,
-            desc="  🔍 Validating",
+            desc="🔍 Validating",
             leave=False,
             ncols=140,
             position=1,
             bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}] {postfix}",
+        )
+
+        # Get terminal width and set appropriate ncols
+        terminal_width = shutil.get_terminal_size().columns
+        progress_width = min(terminal_width - 10, 100)  # Leave some margin
+
+        pbar = tqdm(
+            self.val_loader,
+            desc="🔍 Validating",
+            leave=False,
+            ncols=progress_width,
+            position=1,
+            bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}",
         )
 
         running_mse = 0.0
@@ -843,11 +883,15 @@ class FlowBCTrainer:
                 0.9 * running_cos_sim + 0.1 * step_metrics["val_step/pred_cosine_sim"]
             )
 
+            if self.run:
+                self.run.log(step_metrics, step=self.step_counter)
+            self.step_counter += 1
+
             # Update progress bar
             pbar.set_postfix(
                 {
-                    "val_mse": f"{running_mse:.4f}",
-                    "val_cos_sim": f"{running_cos_sim:.3f}",
+                    "mse": f"{running_mse:.4f}",
+                    "cos_sim": f"{running_cos_sim:.3f}",
                 }
             )
 
@@ -860,13 +904,13 @@ class FlowBCTrainer:
 
         return avg_metrics
 
-    def _log_image_grid(self, epoch: int, split: str):
+    def _log_image_grid(self, epoch: int, split: str, step: int):
         """Log image grid for visualization with samples as rows, timesteps as columns."""
         if self.args.modality_type not in ("image", "state+image"):
             return
 
         # Get a batch
-        loader = self.train_loader if split == "train" else self.val_loader
+        loader = self.train_loader if split.startswith("train") else self.val_loader
         batch = next(iter(loader))
 
         # Process batch
@@ -897,7 +941,7 @@ class FlowBCTrainer:
                         caption=f"Epoch {epoch} - {split} samples (rows) × timesteps (cols)",
                     )
                 },
-                step=epoch,
+                step=step,
             )
 
         print(
@@ -992,16 +1036,17 @@ class FlowBCTrainer:
                 "play/episodes_completed": len(episode_rewards),
                 "play/steps_taken": step_count,
             }
-            self.run.log(play_metrics, step=(epoch + 1) * len(self.train_loader))
+            self.run.log(play_metrics, step=self.step_counter)
+            self.step_counter += 1
 
         print(
             f"🎯 Play completed: {len(episode_rewards)} episodes, avg reward: {np.mean(episode_rewards):.2f}"
         )
 
     def _init_sequence_buffers(self, initial_obs):
-        """Initialize rolling sequence buffers with zeros (like robomimic padding)."""
+        """Initialize rolling sequence buffers by repeating the first observation seq_length times."""
         batch_size = self.args.num_eval_envs
-        seq_len = self.args.sequence_length
+        seq_len = self.args.sequence_length * self.args.frame_stack
 
         state_buffer = None
         image_buffer = None
@@ -1009,50 +1054,63 @@ class FlowBCTrainer:
         try:
             # Initialize state buffer if needed
             if self.args.modality_type in ("state", "state+image"):
-                # Infer state dimension from first observation
+                # Extract current state observation
                 state_parts = []
                 for key in self.dataset.state_keys:
                     if key in initial_obs:
                         obs_data = initial_obs[key]
-                        flat_dim = obs_data.view(batch_size, -1).shape[1]
-                        state_parts.append(flat_dim)
+                        flat_data = obs_data.view(batch_size, -1)  # (B, features)
+                        state_parts.append(flat_data)
 
                 if state_parts:
-                    total_state_dim = sum(state_parts)
-                    state_buffer = torch.zeros(
-                        batch_size,
-                        seq_len,
-                        total_state_dim,
-                        device=self.device,
-                        dtype=torch.float32,
+                    current_state = torch.cat(
+                        state_parts, dim=-1
+                    )  # (B, total_state_dim)
+
+                    # Repeat the first observation seq_length times
+                    state_buffer = (
+                        current_state.unsqueeze(1)
+                        .expand(batch_size, seq_len, -1)
+                        .contiguous()
+                        .to(self.device)
                     )
-                    print(f"🔧 Initialized state buffer: {state_buffer.shape}")
+
+                    print(
+                        f"🔧 Initialized state buffer with repeated first obs: {state_buffer.shape}"
+                    )
 
             # Initialize image buffer if needed
             if self.args.modality_type in ("image", "state+image"):
-                # Use first available image key
+                # Extract current image observation (use first available key)
                 for key in self.dataset.image_keys:
                     if key in initial_obs:
                         img_data = initial_obs[key]
-                        if img_data.dim() == 4:  # (B, C, H, W)
-                            _, H, W, C = img_data.shape
-                            image_buffer = torch.zeros(
-                                batch_size,
-                                seq_len,
-                                C,
-                                H,
-                                W,
-                                device=self.device,
-                                dtype=torch.float32,
+                        if img_data.dim() == 4:  # (B, H, W, C)
+                            # Normalize to [0, 1] if needed
+                            if img_data.max() > 1.0:
+                                img_data = img_data.float() / 255.0
+
+                            # Convert to (B, C, H, W) format
+                            img_data = img_data.permute(0, 3, 1, 2)
+
+                            # Repeat the first observation seq_length times
+                            image_buffer = (
+                                img_data.unsqueeze(1)
+                                .expand(batch_size, seq_len, -1, -1, -1)
+                                .contiguous()
+                                .to(self.device)
                             )
-                            print(f"🔧 Initialized image buffer: {image_buffer.shape}")
+
+                            print(
+                                f"🔧 Initialized image buffer with repeated first obs: {image_buffer.shape}"
+                            )
                             break
 
         except Exception as e:
             print(f"⚠️  Error initializing buffers: {e}")
             print("🔧 Using fallback buffer initialization")
 
-            # Fallback initialization
+            # Fallback initialization with zeros
             if self.args.modality_type in ("state", "state+image"):
                 state_buffer = torch.zeros(
                     batch_size,
@@ -1136,7 +1194,11 @@ class FlowBCTrainer:
         print(f"📅 Epochs: {self.start_epoch + 1} → {self.args.num_epochs}")
         print(f"💾 Checkpoint dir: {self.ckpt_dir}")
         print(f"📊 WandB: {'Online' if self.args.log else 'Offline'}")
-        print(f"🎮 Environment play: Every {self.args.eval_freq * 2} epochs")
+        print(f"🔬 Validation: {'Enabled' if self.args.validation else 'Disabled'}")
+        if self.args.validation:
+            print(f"🎮 Environment play: Every {self.args.eval_freq * 2} epochs")
+        else:
+            print(f"🎮 Environment play: Every {self.args.eval_freq} epochs")
 
         for epoch in range(self.start_epoch + 1, self.args.num_epochs + 1):
             epoch_start = time.time()
@@ -1147,22 +1209,33 @@ class FlowBCTrainer:
             # Training
             train_metrics = self.train_epoch(epoch)
 
-            # Validation
-            if epoch % self.args.eval_freq == 0:
+            # Validation (only if enabled)
+            val_metrics = {}
+            is_best = False
+
+            if self.args.validation and epoch % self.args.eval_freq == 0:
                 val_metrics = self.val_epoch(epoch)
 
-                # Check for best model
+                # Check for best model (only when validation is enabled)
                 val_loss = val_metrics["val_epoch/pred_mse"]
                 is_best = val_loss < self.best_val_loss
                 if is_best:
                     self.best_val_loss = val_loss
 
-                # Play in environment after validation
-                if epoch % self.args.eval_freq == 0:  # Less frequent play
+            # Save checkpoints every epoch (based on save_freq)
+            if epoch % self.args.save_freq == 0:
+                ckpt_path = os.path.join(self.ckpt_dir, f"epoch_{epoch}.pt")
+                self._save_checkpoint(ckpt_path, epoch, is_best=False)
+
+            # Play in environment (separate from validation)
+            if self.args.validation:
+                # When validation is enabled, play less frequently after validation
+                if epoch % (self.args.eval_freq * 2) == 0:
                     self.play_in_environment(epoch)
             else:
-                val_metrics = {}
-                is_best = False
+                # When validation is disabled, play after every eval_freq epochs
+                if epoch % self.args.eval_freq == 0:
+                    self.play_in_environment(epoch)
 
             # Step the learning rate scheduler
             old_lr = self.optimizer.param_groups[0]["lr"]
@@ -1181,14 +1254,10 @@ class FlowBCTrainer:
             epoch_metrics["learning_rate"] = new_lr  # Log current learning rate
 
             if self.run:
-                self.run.log(epoch_metrics, step=(epoch + 1) * len(self.train_loader))
+                self.run.log(epoch_metrics, step=self.step_counter)
 
-            # Save checkpoints
-            if epoch % self.args.save_freq == 0:
-                ckpt_path = os.path.join(self.ckpt_dir, f"epoch_{epoch}.pt")
-                self._save_checkpoint(ckpt_path, epoch, is_best=False)
-
-            if is_best:
+            # Save best checkpoint only if validation is enabled and this is the best
+            if self.args.validation and is_best:
                 best_path = os.path.join(self.ckpt_dir, "best.pt")
                 self._save_checkpoint(best_path, epoch, is_best=True)
 
@@ -1200,12 +1269,18 @@ class FlowBCTrainer:
 
             status_emoji = "🏆" if is_best else "✅"
             lr_info = f"lr: {new_lr:.1e}" if new_lr != current_lr else ""
+            validation_info = " [NO VAL]" if not self.args.validation else ""
+
             print(
-                f"{status_emoji} Epoch {epoch:3d} | "
+                f"{status_emoji} Epoch {epoch:3d}{validation_info} | "
                 + " | ".join(metrics_str)
                 + (f" | 📈 {lr_info}" if lr_info else "")
                 + f" | ⏱️  {epoch_metrics['epoch_time']:.1f}s"
             )
+
+        # Log best checkpoint as artifact only if validation was enabled
+        if self.args.validation:
+            self._log_best_checkpoint_artifact()
 
         if self.run:
             self.run.finish()

@@ -276,7 +276,7 @@ def make_isaaclab_env(
                 "video_folder": os.path.join(log_dir, "videos", "play"),
                 "step_trigger": lambda step: step % kwargs.get("video_interval", 100)
                 == 0,
-                "video_length": kwargs.get("video_length", 50),
+                "video_length": kwargs.get("video_length", 500),
                 "fps": 10,
                 "disable_logger": True,
             }

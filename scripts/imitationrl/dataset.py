@@ -81,7 +81,8 @@ class SequenceDataset:
         pad_sequence: bool = True,
         normalize_actions: bool = True,
         modality_type: str = "state+image",  # "state", "image", "state+image"
-        demo_limit: int | None = None,
+        demo_limit: int | None = 10,
+        frame_stack: int = 1,  # Add frame_stack parameter
         **robomimic_kwargs,
     ):
         """Initialize dataset wrapper around robomimic's SequenceDataset.
@@ -103,10 +104,10 @@ class SequenceDataset:
         # Default keys
         self.state_keys = state_keys or [
             "left_eef_pos",
-            "hand_joint_state",
+            "left_eef_quat",
             "right_eef_pos",
             "right_eef_quat",
-            "left_eef_quat",
+            "hand_joint_state",
         ]
         self.image_keys = image_keys or ["robot_pov_cam"]
 
@@ -130,13 +131,16 @@ class SequenceDataset:
             }
         )
 
+        # Store frame_stack for reshaping later
+        self.frame_stack = robomimic_kwargs.get("frame_stack", frame_stack)
+
         # Create robomimic dataset with defaults + user overrides
         rm_kwargs = {
             "hdf5_path": hdf5_path,
             "obs_keys": tuple(obs_keys),
             "dataset_keys": ("actions",),
-            "frame_stack": 1,
-            "seq_length": sequence_length,
+            "frame_stack": self.frame_stack,  # Use the passed frame_stack
+            "seq_length": 1,  # Force seq_length to 1 when using frame_stack as time
             "pad_frame_stack": True,
             "pad_seq_length": pad_sequence,
             "get_pad_mask": False,
@@ -231,6 +235,7 @@ class SequenceDataset:
 
                 if state_parts:
                     state_seq = torch.cat(state_parts, dim=-1)
+
                     state_seq = state_seq.to(device, non_blocking=True)
 
             # Images: use first key (can be extended for multi-camera)
@@ -260,7 +265,7 @@ class SequenceDataset:
 
     def __len__(self) -> int:
         if self.demo_limit is not None:
-            return min(len(self.dataset), self.demo_limit)
+            return min(len(self.dataset), self.demo_limit * 350)
         return len(self.dataset)
 
     def __getitem__(self, idx: int) -> Dict:
