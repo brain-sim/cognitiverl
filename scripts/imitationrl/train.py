@@ -24,6 +24,7 @@ from tqdm.auto import tqdm
 from scripts.imitationrl.dataset import SequenceDataset
 from scripts.imitationrl.models import BCPolicy
 from scripts.imitationrl.utils import (
+    WarmupExponentialLR,  # Add this import
     compute_metrics,
     compute_random_baseline,
     format_number,
@@ -52,18 +53,25 @@ class TrainArgs:
     # Core training
     device: str = "cuda:0"
     seed: int = 1
-    batch_size: int = 32
-    learning_rate: float = 5e-4
+    batch_size: int = 16
+    learning_rate: float = 1e-4
     num_epochs: int = 100
-    eval_freq: int = 1
+    eval_freq: int = 5
     save_freq: int = 1
 
     # Add validation flag
     validation: bool = False  # New flag to enable/disable validation
+    num_steps: int = 500  # Number of steps per epoch when training
 
-    # Learning rate scheduling - ADD THESE
-    lr_decay: float = 0.5  # Changed default from 1.0 to 0.5 for actual decay
-    lr_steps: Tuple[int] = (10, 20, 50)  # Will default to [10, 20, 50]
+    # Learning rate scheduling - UPDATED FOR WARMUP + EXPONENTIAL DECAY
+    use_warmup_exponential_lr: bool = True  # Enable custom scheduler
+    warmup_epochs: int = 3  # Number of warmup epochs
+    lr_min: float = 1e-4  # Minimum LR (start and end)
+    lr_max: float = 1e-4  # Maximum LR (after warmup)
+
+    # Keep old scheduler options for backwards compatibility
+    lr_decay: float = 0.5  # Only used if use_warmup_exponential_lr=False
+    lr_steps: Tuple[int] = (10, 50)  # Only used if use_warmup_exponential_lr=False
 
     # Data
     dataset: str = (
@@ -120,8 +128,8 @@ class TrainArgs:
     capture_video: bool = True
 
     # Mixed precision
-    amp: bool = True
-    amp_dtype: str = "bf16"
+    amp: bool = False
+    amp_dtype: str = "fp32"
 
 
 def get_args():
@@ -129,7 +137,324 @@ def get_args():
 
 
 # ============================================================================
-# Main Trainer Class (Simplified with TensorDict)
+# Phase 1: Sequence Buffer Manager
+# ============================================================================
+
+
+class SequenceBufferManager:
+    """Handles all TensorDict sequence buffer operations for environment interaction."""
+
+    def __init__(self, args: TrainArgs, dataset: SequenceDataset, device: torch.device):
+        self.args = args
+        self.dataset = dataset
+        self.device = device
+
+    def init_sequence_buffers(self, initial_obs) -> TensorDict:
+        """Initialize rolling sequence buffers using TensorDict for cleaner buffer management."""
+        batch_size = self.args.num_eval_envs
+        seq_len = self.args.sequence_length * self.args.frame_stack
+
+        def init_state_buffer():
+            state_parts = [
+                initial_obs[key].view(batch_size, -1)
+                for key in self.dataset.state_keys
+                if key in initial_obs
+            ]
+            if state_parts:
+                current_state = torch.cat(state_parts, dim=-1)
+                return (
+                    current_state.unsqueeze(1)
+                    .expand(batch_size, seq_len, -1)
+                    .contiguous()
+                    .to(self.device)
+                )
+            return None
+
+        def init_image_buffer():
+            for key in self.dataset.image_keys:
+                if key in initial_obs and initial_obs[key].dim() == 4:
+                    img_data = process_image_batch(
+                        initial_obs[key], target_format="BCHW", normalize_to_01=True
+                    )
+                    return (
+                        img_data.unsqueeze(1)
+                        .expand(batch_size, seq_len, -1, -1, -1)
+                        .contiguous()
+                        .to(self.device)
+                    )
+            return None
+
+        buffer_dict = {}
+
+        # Initialize buffers with explicit None checks instead of boolean evaluation
+        try:
+            if self.args.modality_type in ("state", "state+image"):
+                state_buffer = init_state_buffer()
+                if state_buffer is not None:
+                    buffer_dict["state_seq"] = state_buffer
+                else:
+                    buffer_dict["state_seq"] = torch.zeros(
+                        batch_size, seq_len, 36, device=self.device
+                    )
+
+            if self.args.modality_type in ("image", "state+image"):
+                C, H, W = self.args.img_size
+                image_buffer = init_image_buffer()
+                if image_buffer is not None:
+                    buffer_dict["image_seq"] = image_buffer
+                else:
+                    buffer_dict["image_seq"] = torch.zeros(
+                        batch_size, seq_len, C, H, W, device=self.device
+                    )
+        except Exception as e:
+            print(f"⚠️  Error initializing buffers: {e}, using fallback")
+
+        return TensorDict(buffer_dict, batch_size=[batch_size])
+
+    def update_sequence_buffers(self, obs, buffer_td: TensorDict) -> TensorDict:
+        """Update rolling sequence buffers using TensorDict for cleaner buffer management."""
+        updated_dict = {}
+
+        # Update state buffer
+        if "state_seq" in buffer_td and self.args.modality_type in (
+            "state",
+            "state+image",
+        ):
+            state_parts = [
+                obs[key].view(obs[key].shape[0], -1)
+                for key in self.dataset.state_keys
+                if key in obs
+            ]
+            if state_parts:
+                current_state = torch.cat(state_parts, dim=-1).to(self.device)
+                state_buffer = torch.roll(buffer_td["state_seq"], shifts=-1, dims=1)
+                state_buffer[:, -1, :] = current_state
+                updated_dict["state_seq"] = state_buffer
+            else:
+                updated_dict["state_seq"] = buffer_td["state_seq"]
+        else:
+            updated_dict["state_seq"] = buffer_td.get("state_seq")
+
+        # Update image buffer
+        if "image_seq" in buffer_td and self.args.modality_type in (
+            "image",
+            "state+image",
+        ):
+            current_image = None
+            for key in self.dataset.image_keys:
+                if key in obs and obs[key].dim() == 4:
+                    current_image = process_image_batch(
+                        obs[key], target_format="BCHW", normalize_to_01=True
+                    )
+                    break
+
+            if current_image is not None:
+                image_buffer = torch.roll(buffer_td["image_seq"], shifts=-1, dims=1)
+                image_buffer[:, -1, :, :, :] = current_image.to(self.device)
+                updated_dict["image_seq"] = image_buffer
+            else:
+                updated_dict["image_seq"] = buffer_td["image_seq"]
+        else:
+            updated_dict["image_seq"] = buffer_td.get("image_seq")
+
+        return TensorDict(updated_dict, batch_size=buffer_td.batch_size)
+
+    def handle_episode_rewards(
+        self,
+        done: torch.Tensor,
+        current_rewards: torch.Tensor,
+        episode_rewards: List,
+        buffer_td: TensorDict,
+    ) -> torch.Tensor:
+        """Handle episode completion and reset buffers."""
+        for i in range(self.args.num_eval_envs):
+            if done[i]:
+                if len(episode_rewards) < 100:  # Limit logging
+                    episode_rewards.append(current_rewards[i].item())
+                current_rewards[i] = 0.0
+
+                # Reset sequence buffers for this environment using TensorDict
+                if "state_seq" in buffer_td:
+                    buffer_td["state_seq"][i] = 0.0
+                if "image_seq" in buffer_td:
+                    buffer_td["image_seq"][i] = 0.0
+        return current_rewards
+
+
+# ============================================================================
+# Phase 2: Environment Runner
+# ============================================================================
+
+
+class EnvironmentRunner:
+    """Handles Isaac environment setup and interaction for model evaluation."""
+
+    def __init__(
+        self,
+        args: TrainArgs,
+        action_normalizer,
+        buffer_manager: SequenceBufferManager,
+        wandb_run,
+        amp_enabled: bool,
+        amp_dtype: torch.dtype,
+    ):
+        # Don't store model reference
+        self.args = args
+        self.action_normalizer = action_normalizer
+        self.buffer_manager = buffer_manager
+        self.run = wandb_run
+        self.amp_enabled = amp_enabled
+        self.amp_dtype = amp_dtype
+        self.eval_envs = None
+        self.step_counter = 0
+
+        # Setup environment
+        self._setup_environment()
+
+    def _setup_environment(self):
+        """Setup IsaacLab environment for play."""
+        print_section_header("🎮 ENVIRONMENT SETUP")
+        try:
+            print("🔧 Importing required modules...")
+            import isaaclab_tasks  # noqa: F401
+            import isaaclab_tasks.manager_based.manipulation.pick_place  # noqa: F401
+
+            print("✅ Modules imported successfully")
+
+            print("🔧 Creating environment...")
+            self.eval_envs = make_isaaclab_env(
+                self.args.seed,
+                self.args.task,
+                self.args.device,
+                self.args.num_eval_envs,
+                self.args.capture_video,
+                False,  # disable_fabric
+                log_dir=self.run.dir if self.run else ".",
+                video_length=self.args.num_eval_steps,
+                video_interval=self.args.num_eval_steps,
+            )()
+
+            print(f"🎯 Task: {self.args.task}")
+            print(f"🤖 Num environments: {self.args.num_eval_envs}")
+            print(f"📹 Capture video: {self.args.capture_video}")
+            print(f"👁️  Headless: {self.args.headless}")
+            print(f"📸 Enable cameras: {self.args.enable_cameras}")
+            print("✅ Environment initialized successfully")
+
+        except Exception as e:
+            print(f"❌ Environment setup failed: {e}")
+            print("🔧 Continuing without environment (play will be skipped)")
+            self.eval_envs = None
+
+    @torch.no_grad()
+    def play_in_environment(self, model, epoch: int, step_counter: int) -> int:
+        """Play model in environment - model passed as parameter"""
+        if self.eval_envs is None:
+            print("⚠️  Environment not available, skipping play")
+            return step_counter
+
+        print(f"🎮 Playing model in environment (epoch {epoch})")
+        model.eval()
+
+        # Initialize environment and tracking variables
+        obs, _ = self.eval_envs.reset()
+        step_count = 0
+        done = torch.zeros(self.args.num_eval_envs, dtype=torch.bool)
+        episode_rewards = []
+        current_rewards = torch.zeros(self.args.num_eval_envs)
+
+        # Initialize rolling buffers using TensorDict
+        buffer_td = self.buffer_manager.init_sequence_buffers(obs)
+
+        play_pbar = tqdm(
+            range(self.args.num_eval_steps), desc="🎮 Playing", leave=False, ncols=100
+        )
+
+        for step in play_pbar:
+            if done.all():
+                break
+
+            # Update rolling buffers and get actions
+            buffer_td = self.buffer_manager.update_sequence_buffers(obs, buffer_td)
+
+            with torch.amp.autocast(
+                device_type="cuda", enabled=self.amp_enabled, dtype=self.amp_dtype
+            ):
+                # Extract actual tensors from TensorDict
+                state_seq = buffer_td["state_seq"] if "state_seq" in buffer_td else None
+                image_seq = buffer_td["image_seq"] if "image_seq" in buffer_td else None
+
+                pred_actions = model.sample_actions(
+                    state_seq,
+                    image_seq,
+                    steps=self.args.val_flow_steps,
+                    deterministic=True,
+                )
+
+            # Process actions and step environment
+            if self.action_normalizer:
+                pred_actions = self.action_normalizer.denormalize(pred_actions)
+            obs, rewards, done, _ = self.eval_envs.step(pred_actions.float())
+
+            # Track and handle rewards/episodes
+            current_rewards += rewards.cpu()
+            current_rewards = self.buffer_manager.handle_episode_rewards(
+                done, current_rewards, episode_rewards, buffer_td
+            )
+
+            step_count += 1
+            play_pbar.set_postfix(
+                {
+                    "completed": f"{done.sum().item()}/{self.args.num_eval_envs}",
+                    "avg_reward": f"{np.mean(episode_rewards):.2f}"
+                    if episode_rewards
+                    else "N/A",
+                }
+            )
+
+        self.eval_envs.reset()
+        # Log results
+        if episode_rewards and self.run:
+            self.run.log(
+                {
+                    "play/avg_reward": np.mean(episode_rewards),
+                    "play/max_reward": np.max(episode_rewards),
+                    "play/min_reward": np.min(episode_rewards),
+                    "play/episodes_completed": len(episode_rewards),
+                    "play/steps_taken": step_count,
+                },
+                step=step_counter,
+            )
+            step_counter += 1
+
+        print(
+            f"🎯 Play completed: {len(episode_rewards)} episodes, avg reward: {np.mean(episode_rewards):.2f}"
+        )
+        return step_counter
+
+    def handle_environment_play(self, model, epoch: int, step_counter: int) -> int:
+        """Handle environment play scheduling."""
+        if self.args.validation:
+            # When validation is enabled, play less frequently after validation
+            if epoch % (self.args.eval_freq * 2) == 0:
+                return self.play_in_environment(model, epoch, step_counter)
+        else:
+            # When validation is disabled, play after every eval_freq epochs
+            if epoch % self.args.eval_freq == 0:
+                return self.play_in_environment(model, epoch, step_counter)
+        return step_counter
+
+    def close(self):
+        """Cleanup environment."""
+        if self.eval_envs is not None:
+            try:
+                self.eval_envs.close()
+            except Exception as e:
+                print(f"❌ Error closing evaluation environment: {e}")
+
+
+# ============================================================================
+# Main Trainer Class (Refactored)
 # ============================================================================
 
 
@@ -167,8 +492,18 @@ class FlowBCTrainer:
         # Print model info (now that everything is set up)
         self._print_model_info()
 
-        # Setup environment for play
-        self._setup_environment()
+        # Setup buffer manager
+        self.buffer_manager = SequenceBufferManager(args, self.dataset, self.device)
+
+        # Setup environment runner
+        self.env_runner = EnvironmentRunner(
+            args,
+            self.action_normalizer,
+            self.buffer_manager,
+            self.run,
+            self.amp_enabled,
+            self.amp_dtype,
+        )
 
         # Resume from checkpoint if specified
         if args.resume:
@@ -290,11 +625,19 @@ class FlowBCTrainer:
             print(f"⚡ Optimizer: {self.optimizer.__class__.__name__}")
             print(f"📈 Learning rate: {self.args.learning_rate}")
 
-            # Scheduler info
-            lr_steps = self.args.lr_steps or [10, 20, 50]
-            print("📉 LR Scheduler: MultiStepLR")
-            print(f"📅 LR decay steps: {lr_steps}")
-            print(f"📉 LR decay factor: {self.args.lr_decay}")
+            # Scheduler info - UPDATED
+            if self.args.use_warmup_exponential_lr:
+                print("📉 LR Scheduler: WarmupExponentialLR")
+                print(f"🔥 Warmup epochs: {self.args.warmup_epochs}")
+                print(
+                    f"📈 LR range: {self.args.lr_min:.0e} → {self.args.lr_max:.0e} → {self.args.lr_min:.0e}"
+                )
+            else:
+                lr_steps = self.args.lr_steps
+                print("📉 LR Scheduler: MultiStepLR")
+                print(f"📅 LR decay steps: {lr_steps}")
+                print(f"📉 LR decay factor: {self.args.lr_decay}")
+
             print(f"🔄 Current LR: {self.optimizer.param_groups[0]['lr']:.2e}")
         except Exception as e:
             print(f"❌ Error getting optimizer info: {e}")
@@ -403,7 +746,7 @@ class FlowBCTrainer:
             pin_memory=self.args.pin_memory,
             drop_last=False,
         )
-
+        self.train_loader_iter = None
         return train_loader, val_loader
 
     def _setup_model(self):
@@ -447,54 +790,45 @@ class FlowBCTrainer:
             raise
 
         print("🔧 Creating optimizer...")
-        optimizer = torch.optim.AdamW(model.parameters(), lr=self.args.learning_rate)
+        # Use lr_min as initial LR for warmup scheduler, otherwise use learning_rate
+        initial_lr = (
+            self.args.lr_min
+            if self.args.use_warmup_exponential_lr
+            else self.args.learning_rate
+        )
+        optimizer = torch.optim.AdamW(model.parameters(), lr=initial_lr)
         print("✅ Optimizer created successfully")
 
         # Setup learning rate scheduler
-        lr_steps = self.args.lr_steps or [10, 20, 50]
-        scheduler = torch.optim.lr_scheduler.MultiStepLR(
-            optimizer, milestones=lr_steps, gamma=self.args.lr_decay
-        )
+        scheduler = None
+        if self.args.use_warmup_exponential_lr:
+            scheduler = WarmupExponentialLR(
+                optimizer=optimizer,
+                warmup_epochs=self.args.warmup_epochs,
+                total_epochs=self.args.num_epochs,
+                min_lr=self.args.lr_min,
+                max_lr=self.args.lr_max,
+            )
+            print(
+                f"📈 Custom LR schedule: warmup {self.args.warmup_epochs} epochs ({self.args.lr_min:.0e} → {self.args.lr_max:.0e})"
+            )
+            print(
+                f"📉 Then exponential decay to {self.args.lr_min:.0e} over {self.args.num_epochs - self.args.warmup_epochs} epochs"
+            )
+        else:
+            # Fallback to old MultiStepLR scheduler
+            lr_steps = self.args.lr_steps
+            if len(lr_steps) > 0:
+                scheduler = torch.optim.lr_scheduler.MultiStepLR(
+                    optimizer, milestones=lr_steps, gamma=self.args.lr_decay
+                )
+                print(
+                    f"📈 LR schedule: decay by {self.args.lr_decay}x at epochs {lr_steps}"
+                )
 
         print("✅ Optimizer and scheduler created successfully")
-        print(f"📈 LR schedule: decay by {self.args.lr_decay}x at epochs {lr_steps}")
 
         return model, optimizer, scheduler
-
-    def _setup_environment(self):
-        """Setup IsaacLab environment for play."""
-        print_section_header("🎮 ENVIRONMENT SETUP")
-        try:
-            print("🔧 Importing required modules...")
-            import isaaclab_tasks  # noqa: F401
-            import isaaclab_tasks.manager_based.manipulation.pick_place  # noqa: F401
-
-            print("✅ Modules imported successfully")
-
-            print("🔧 Creating environment...")
-            self.eval_envs = make_isaaclab_env(
-                self.args.seed,
-                self.args.task,
-                self.args.device,
-                self.args.num_eval_envs,
-                self.args.capture_video,
-                False,  # disable_fabric
-                log_dir=self.run.dir if self.run else ".",
-                video_length=self.args.num_eval_steps,
-                video_interval=self.args.num_eval_steps,
-            )()
-
-            print(f"🎯 Task: {self.args.task}")
-            print(f"🤖 Num environments: {self.args.num_eval_envs}")
-            print(f"📹 Capture video: {self.args.capture_video}")
-            print(f"👁️  Headless: {self.args.headless}")
-            print(f"📸 Enable cameras: {self.args.enable_cameras}")
-            print("✅ Environment initialized successfully")
-
-        except Exception as e:
-            print(f"❌ Environment setup failed: {e}")
-            print("🔧 Continuing without environment (play will be skipped)")
-            self.eval_envs = None
 
     def _save_checkpoint(self, path: str, epoch: int, is_best: bool = False):
         """Save checkpoint with normalization values."""
@@ -503,7 +837,6 @@ class FlowBCTrainer:
         checkpoint = {
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
-            "scheduler_state_dict": self.scheduler.state_dict(),  # Save scheduler state
             "epoch": epoch,
             "best_val_loss": self.best_val_loss,
             "args": vars(self.args),
@@ -511,6 +844,8 @@ class FlowBCTrainer:
             if self.action_normalizer
             else None,
         }
+        if len(self.args.lr_steps) > 0:
+            checkpoint["scheduler_state_dict"] = self.scheduler.state_dict()
 
         torch.save(checkpoint, path)
 
@@ -595,7 +930,7 @@ class FlowBCTrainer:
         # Backward pass
         self.scaler.scale(flow_loss).backward()
         self.scaler.unscale_(self.optimizer)
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+        # torch.nn.utils.clip_grad_norm_(self.model.parameters(), 10.0)
         self.scaler.step(self.optimizer)
         self.scaler.update()
 
@@ -646,7 +981,7 @@ class FlowBCTrainer:
         return step_metrics
 
     def train_epoch(self, epoch: int) -> Dict[str, float]:
-        """Training epoch with Lightning-style progress display."""
+        """Training epoch with random sampling limited to num_steps."""
         self.model.train()
         epoch_metrics = []
 
@@ -658,26 +993,44 @@ class FlowBCTrainer:
             self._log_image_grid(epoch, "train_epoch", self.step_counter)
 
         # Lightning-style progress bar with better info
-        # Get terminal width and set appropriate ncols
         terminal_width = shutil.get_terminal_size().columns
-        progress_width = min(terminal_width - 10, 100)  # Leave some margin
+        progress_width = min(terminal_width - 10, 100)
 
+        train_num_steps = (
+            len(self.train_loader)
+            if self.args.num_steps is None
+            else self.args.num_steps
+        )
         pbar = tqdm(
-            self.train_loader,
+            range(train_num_steps),
             desc="  🔥 Training",
             leave=False,
-            ncols=progress_width,  # Reduced from 140
+            total=train_num_steps,
+            ncols=progress_width,
             position=1,
-            bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}",  # Removed rate_fmt
+            bar_format="{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}] {postfix}",
         )
 
         running_loss = 0.0
         running_mse = 0.0
         running_cos_sim = 0.0
-        # Update running averages with more recent bias
-        alpha = 0.1  # smoothing factor
+        alpha = 0.1
 
-        for step, batch in enumerate(pbar):
+        step_count = 0
+        if self.train_loader_iter is None:
+            self.train_loader_iter = iter(self.train_loader)
+        for step in enumerate(pbar):
+            try:
+                batch = next(self.train_loader_iter)
+            except StopIteration:
+                print("🔄 Reached end of DataLoader, restarting iterator")
+                self.train_loader_iter = iter(self.train_loader)
+                batch = next(self.train_loader_iter)
+            # Limit to num_steps per epoch
+            if step_count >= self.args.num_steps:
+                print(f"✅ Reached {self.args.num_steps} steps, stopping epoch")
+                break
+
             # Training step
             step_metrics = self.train_step(batch)
             epoch_metrics.append(step_metrics)
@@ -696,19 +1049,21 @@ class FlowBCTrainer:
             if self.run:
                 self.run.log(step_metrics, step=self.step_counter)
             self.step_counter += 1
+            step_count += 1
 
-            # Update progress bar with key metrics (simplified)
+            # Update progress bar with key metrics
             pbar.set_postfix(
                 {
-                    "loss": f"{running_loss:.3f}",  # Reduced precision
+                    "loss": f"{running_loss:.3f}",
                     "mse": f"{running_mse:.3f}",
                     "cos_sim": f"{running_cos_sim:.3f}",
-                    "lr": f"{self.optimizer.param_groups[0]['lr']:.0e}",  # Shorter format
+                    "lr": f"{self.optimizer.param_groups[0]['lr']:.0e}",
                     "gn": f"{get_grad_norm(self.model):.2f}",
+                    "step": f"{step_count}/{self.args.num_steps}",
                 }
             )
 
-        # Epoch-wise averaging (PyTorch Lightning style)
+        # Epoch-wise averaging
         avg_metrics = {}
         for key in epoch_metrics[0].keys():
             avg_metrics[key.replace("step", "epoch")] = np.mean(
@@ -827,214 +1182,6 @@ class FlowBCTrainer:
             f"✅ Logged {split} image grid: {num_samples} samples × {selected_images.size(1)} timesteps"
         )
 
-    def _init_sequence_buffers(self, initial_obs) -> TensorDict:
-        """Initialize rolling sequence buffers using TensorDict for cleaner buffer management."""
-        batch_size = self.args.num_eval_envs
-        seq_len = self.args.sequence_length * self.args.frame_stack
-
-        def init_state_buffer():
-            state_parts = [
-                initial_obs[key].view(batch_size, -1)
-                for key in self.dataset.state_keys
-                if key in initial_obs
-            ]
-            if state_parts:
-                current_state = torch.cat(state_parts, dim=-1)
-                return (
-                    current_state.unsqueeze(1)
-                    .expand(batch_size, seq_len, -1)
-                    .contiguous()
-                    .to(self.device)
-                )
-            return None
-
-        def init_image_buffer():
-            for key in self.dataset.image_keys:
-                if key in initial_obs and initial_obs[key].dim() == 4:
-                    img_data = process_image_batch(
-                        initial_obs[key], target_format="BCHW", normalize_to_01=True
-                    )
-                    return (
-                        img_data.unsqueeze(1)
-                        .expand(batch_size, seq_len, -1, -1, -1)
-                        .contiguous()
-                        .to(self.device)
-                    )
-            return None
-
-        buffer_dict = {}
-
-        # Try to initialize buffers, fall back to zeros on any error
-        try:
-            if self.args.modality_type in ("state", "state+image"):
-                buffer_dict["state_seq"] = init_state_buffer() or torch.zeros(
-                    batch_size, seq_len, 36, device=self.device
-                )
-
-            if self.args.modality_type in ("image", "state+image"):
-                C, H, W = self.args.img_size
-                buffer_dict["image_seq"] = init_image_buffer() or torch.zeros(
-                    batch_size, seq_len, C, H, W, device=self.device
-                )
-        except Exception as e:
-            print(f"⚠️  Error initializing buffers: {e}, using fallback")
-
-        return TensorDict(buffer_dict, batch_size=[batch_size])
-
-    def _update_sequence_buffers(self, obs, buffer_td: TensorDict) -> TensorDict:
-        """Update rolling sequence buffers using TensorDict for cleaner buffer management."""
-        updated_dict = {}
-
-        # Update state buffer
-        if "state_seq" in buffer_td and self.args.modality_type in (
-            "state",
-            "state+image",
-        ):
-            state_parts = [
-                obs[key].view(obs[key].shape[0], -1)
-                for key in self.dataset.state_keys
-                if key in obs
-            ]
-            if state_parts:
-                current_state = torch.cat(state_parts, dim=-1).to(self.device)
-                state_buffer = torch.roll(buffer_td["state_seq"], shifts=-1, dims=1)
-                state_buffer[:, -1, :] = current_state
-                updated_dict["state_seq"] = state_buffer
-            else:
-                updated_dict["state_seq"] = buffer_td["state_seq"]
-        else:
-            updated_dict["state_seq"] = buffer_td.get("state_seq")
-
-        # Update image buffer
-        if "image_seq" in buffer_td and self.args.modality_type in (
-            "image",
-            "state+image",
-        ):
-            current_image = None
-            for key in self.dataset.image_keys:
-                if key in obs and obs[key].dim() == 4:
-                    current_image = process_image_batch(
-                        obs[key], target_format="BCHW", normalize_to_01=True
-                    )
-                    break
-
-            if current_image is not None:
-                image_buffer = torch.roll(buffer_td["image_seq"], shifts=-1, dims=1)
-                image_buffer[:, -1, :, :, :] = current_image.to(self.device)
-                updated_dict["image_seq"] = image_buffer
-            else:
-                updated_dict["image_seq"] = buffer_td["image_seq"]
-        else:
-            updated_dict["image_seq"] = buffer_td.get("image_seq")
-
-        return TensorDict(updated_dict, batch_size=buffer_td.batch_size)
-
-    def _handle_episode_rewards(
-        self,
-        done: torch.Tensor,
-        current_rewards: torch.Tensor,
-        episode_rewards: List,
-        buffer_td: TensorDict,
-    ) -> torch.Tensor:
-        """Handle episode completion and reset buffers."""
-        for i in range(self.args.num_eval_envs):
-            if done[i]:
-                if len(episode_rewards) < 100:  # Limit logging
-                    episode_rewards.append(current_rewards[i].item())
-                current_rewards[i] = 0.0
-
-                # Reset sequence buffers for this environment using TensorDict
-                if "state_seq" in buffer_td:
-                    buffer_td["state_seq"][i] = 0.0
-                if "image_seq" in buffer_td:
-                    buffer_td["image_seq"][i] = 0.0
-        return current_rewards
-
-    @torch.no_grad()
-    def play_in_environment(self, epoch: int):
-        """Play model in IsaacLab environment using TensorDict for buffer management."""
-        if self.eval_envs is None:
-            print("⚠️  Environment not available, skipping play")
-            return
-
-        print(f"🎮 Playing model in environment (epoch {epoch})")
-        self.model.eval()
-
-        # Initialize environment and tracking variables
-        obs, _ = self.eval_envs.reset()
-        step_count = 0
-        done = torch.zeros(self.args.num_eval_envs, dtype=torch.bool)
-        episode_rewards = []
-        current_rewards = torch.zeros(self.args.num_eval_envs)
-
-        # Initialize rolling buffers using TensorDict
-        buffer_td = self._init_sequence_buffers(obs)
-
-        play_pbar = tqdm(
-            range(self.args.num_eval_steps), desc="🎮 Playing", leave=False, ncols=100
-        )
-
-        for step in play_pbar:
-            if done.all():
-                break
-
-            # Update rolling buffers and get actions
-            buffer_td = self._update_sequence_buffers(obs, buffer_td)
-
-            with torch.amp.autocast(
-                device_type="cuda", enabled=self.amp_enabled, dtype=self.amp_dtype
-            ):
-                # Extract actual tensors from TensorDict
-                state_seq = buffer_td["state_seq"] if "state_seq" in buffer_td else None
-                image_seq = buffer_td["image_seq"] if "image_seq" in buffer_td else None
-
-                pred_actions = self.model.sample_actions(
-                    state_seq,
-                    image_seq,
-                    steps=self.args.val_flow_steps,
-                    deterministic=True,
-                )
-
-            # Process actions and step environment
-            if self.action_normalizer:
-                pred_actions = self.action_normalizer.denormalize(pred_actions)
-            obs, rewards, done, _ = self.eval_envs.step(pred_actions.float())
-
-            # Track and handle rewards/episodes
-            current_rewards += rewards.cpu()
-            current_rewards = self._handle_episode_rewards(
-                done, current_rewards, episode_rewards, buffer_td
-            )
-
-            step_count += 1
-            play_pbar.set_postfix(
-                {
-                    "completed": f"{done.sum().item()}/{self.args.num_eval_envs}",
-                    "avg_reward": f"{np.mean(episode_rewards):.2f}"
-                    if episode_rewards
-                    else "N/A",
-                }
-            )
-
-        self.eval_envs.reset()
-        # Log results
-        if episode_rewards and self.run:
-            self.run.log(
-                {
-                    "play/avg_reward": np.mean(episode_rewards),
-                    "play/max_reward": np.max(episode_rewards),
-                    "play/min_reward": np.min(episode_rewards),
-                    "play/episodes_completed": len(episode_rewards),
-                    "play/steps_taken": step_count,
-                },
-                step=self.step_counter,
-            )
-            self.step_counter += 1
-
-        print(
-            f"🎯 Play completed: {len(episode_rewards)} episodes, avg reward: {np.mean(episode_rewards):.2f}"
-        )
-
     def _handle_checkpoints_and_validation(self, epoch: int, val_metrics: Dict) -> bool:
         """Handle validation, checkpoints, and best model tracking."""
         is_best = False
@@ -1057,17 +1204,6 @@ class FlowBCTrainer:
             self._save_checkpoint(best_path, epoch, is_best=True)
 
         return is_best
-
-    def _handle_environment_play(self, epoch: int):
-        """Handle environment play scheduling."""
-        if self.args.validation:
-            # When validation is enabled, play less frequently after validation
-            if epoch % (self.args.eval_freq * 2) == 0:
-                self.play_in_environment(epoch)
-        else:
-            # When validation is disabled, play after every eval_freq epochs
-            if epoch % self.args.eval_freq == 0:
-                self.play_in_environment(epoch)
 
     def _log_epoch_summary(
         self,
@@ -1121,16 +1257,19 @@ class FlowBCTrainer:
             val_metrics = {}
             is_best = self._handle_checkpoints_and_validation(epoch, val_metrics)
 
-            # Environment play
-            self._handle_environment_play(epoch)
+            # Environment play (delegated to environment runner)
+            self.step_counter = self.env_runner.handle_environment_play(
+                self.model, epoch, self.step_counter
+            )
 
-            # Learning rate scheduling
+            # Learning rate scheduling - UPDATED
             old_lr = self.optimizer.param_groups[0]["lr"]
-            self.scheduler.step()
+            if self.scheduler is not None:
+                self.scheduler.step()
             new_lr = self.optimizer.param_groups[0]["lr"]
 
             if old_lr != new_lr:
-                print(f"📉 Learning rate decayed: {old_lr:.2e} → {new_lr:.2e}")
+                print(f"📉 Learning rate updated: {old_lr:.2e} → {new_lr:.2e}")
 
             # Prepare and log epoch metrics
             epoch_metrics = {
@@ -1155,12 +1294,8 @@ class FlowBCTrainer:
 
     def __del__(self):
         """Cleanup environment on deletion."""
-        if hasattr(self, "eval_envs") and self.eval_envs is not None:
-            try:
-                self.eval_envs.close()
-            except Exception as e:
-                print(f"❌ Error closing evaluation environment: {e}")
-                pass
+        if hasattr(self, "env_runner") and self.env_runner is not None:
+            self.env_runner.close()
 
 
 def main():

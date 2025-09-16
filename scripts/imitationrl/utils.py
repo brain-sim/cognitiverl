@@ -1,3 +1,4 @@
+import math
 from typing import Dict, List
 
 import torch
@@ -14,7 +15,106 @@ __all__ = [
     "format_number",
     "compute_metrics",
     "compute_random_baseline",
+    "WarmupExponentialLR",  # Add to exports
 ]
+
+# ============================================================================
+# Learning Rate Scheduler
+# ============================================================================
+
+
+class WarmupExponentialLR:
+    """Custom LR scheduler with warmup followed by exponential decay.
+
+    Phase 1 (warmup_epochs): Linear warmup from min_lr to max_lr
+    Phase 2 (remaining epochs): Exponential decay from max_lr to min_lr
+
+    Args:
+        optimizer: PyTorch optimizer
+        warmup_epochs: Number of epochs for warmup phase
+        total_epochs: Total number of training epochs
+        min_lr: Minimum learning rate (start and end value)
+        max_lr: Maximum learning rate (after warmup)
+
+    Example:
+        >>> scheduler = WarmupExponentialLR(optimizer, warmup_epochs=3, total_epochs=100,
+        ...                                min_lr=1e-6, max_lr=1e-4)
+        >>> for epoch in range(100):
+        ...     # training code here
+        ...     scheduler.step()
+    """
+
+    def __init__(
+        self,
+        optimizer,
+        warmup_epochs: int,
+        total_epochs: int,
+        min_lr: float = 1e-6,
+        max_lr: float = 1e-4,
+    ):
+        self.optimizer = optimizer
+        self.warmup_epochs = warmup_epochs
+        self.total_epochs = total_epochs
+        self.min_lr = min_lr
+        self.max_lr = max_lr
+        self.current_epoch = 0
+
+        # Calculate exponential decay rate for phase 2
+        decay_epochs = total_epochs - warmup_epochs
+        if decay_epochs > 0:
+            # Solve: max_lr * exp(-decay_rate * decay_epochs) = min_lr
+            self.decay_rate = math.log(max_lr / min_lr) / decay_epochs
+        else:
+            self.decay_rate = 0.0
+
+        # Set initial LR to min_lr
+        for param_group in self.optimizer.param_groups:
+            param_group["lr"] = self.min_lr
+
+    def step(self):
+        """Update learning rate based on current epoch."""
+        self.current_epoch += 1
+
+        if self.current_epoch <= self.warmup_epochs:
+            # Phase 1: Linear warmup
+            lr = self.min_lr + (self.max_lr - self.min_lr) * (
+                self.current_epoch / self.warmup_epochs
+            )
+        else:
+            # Phase 2: Exponential decay
+            decay_epochs_passed = self.current_epoch - self.warmup_epochs
+            lr = self.max_lr * math.exp(-self.decay_rate * decay_epochs_passed)
+            # Ensure LR doesn't go below min_lr
+            lr = max(lr, self.min_lr)
+
+        # Apply new learning rate
+        for param_group in self.optimizer.param_groups:
+            param_group["lr"] = lr
+
+    def get_last_lr(self):
+        """Return current learning rate (for compatibility with PyTorch schedulers)."""
+        return [param_group["lr"] for param_group in self.optimizer.param_groups]
+
+    def state_dict(self):
+        """Return scheduler state for checkpointing."""
+        return {
+            "current_epoch": self.current_epoch,
+            "warmup_epochs": self.warmup_epochs,
+            "total_epochs": self.total_epochs,
+            "min_lr": self.min_lr,
+            "max_lr": self.max_lr,
+            "decay_rate": self.decay_rate,
+        }
+
+    def load_state_dict(self, state_dict):
+        """Load scheduler state from checkpoint."""
+        self.current_epoch = state_dict["current_epoch"]
+        self.warmup_epochs = state_dict["warmup_epochs"]
+        self.total_epochs = state_dict["total_epochs"]
+        self.min_lr = state_dict["min_lr"]
+        self.max_lr = state_dict["max_lr"]
+        self.decay_rate = state_dict["decay_rate"]
+
 
 # ============================================================================
 # Utility Functions (simplified with TensorDict)

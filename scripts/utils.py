@@ -278,7 +278,7 @@ def make_isaaclab_env(
                 "step_trigger": lambda step: step % kwargs.get("video_interval", 100)
                 == 0,
                 "video_length": kwargs.get("video_length", 500),
-                "fps": 10,
+                # "fps": 10,
                 "disable_logger": True,
             }
             print_dict(video_kwargs, nesting=4, color="magenta", attrs=["bold"])
